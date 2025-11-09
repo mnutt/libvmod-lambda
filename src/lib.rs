@@ -17,8 +17,6 @@ pub struct BgThread {
     #[allow(dead_code)]
     rt: Runtime,
     sender: UnboundedSender<(InvokeRequest, oneshot::Sender<Result<InvokeResponse, String>>)>,
-    #[allow(dead_code)]
-    concurrency_limit: Arc<Semaphore>,
 }
 
 /// Request to invoke a Lambda function
@@ -45,12 +43,9 @@ impl BgThread {
     fn new() -> Result<Self, Box<dyn Error>> {
         let rt = Runtime::new()?;
         let (sender, mut receiver) = mpsc::unbounded_channel::<(InvokeRequest, oneshot::Sender<Result<InvokeResponse, String>>)>();
-        let concurrency_limit = Arc::new(Semaphore::new(MAX_CONCURRENT_INVOCATIONS));
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_INVOCATIONS));
 
-        // Spawn background task to process Lambda invocations
-        let semaphore = concurrency_limit.clone();
         rt.spawn(async move {
-            // Initialize AWS config and Lambda client once
             let config = aws_config::load_from_env().await;
             let lambda_client = LambdaClient::new(&config);
 
@@ -58,21 +53,16 @@ impl BgThread {
                 let client = lambda_client.clone();
                 let sem = semaphore.clone();
 
-                // Spawn a task for each Lambda invocation to allow concurrent processing
-                // Acquire permit to limit concurrency - this will block if at limit
                 tokio::spawn(async move {
-                    // Acquire permit (blocks if at MAX_CONCURRENT_INVOCATIONS)
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = sem.acquire().await.expect("semaphore closed");
 
                     let result = invoke_lambda(&client, &req.function_name, req.payload).await;
                     let _ = resp_tx.send(result);
-
-                    // Permit is automatically released when _permit is dropped
                 });
             }
         });
 
-        Ok(BgThread { rt, sender, concurrency_limit })
+        Ok(BgThread { rt, sender })
     }
 }
 
