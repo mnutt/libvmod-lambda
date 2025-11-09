@@ -1,0 +1,26 @@
+varnishtest "Test lambda vmod"
+
+server s1 {
+    rxreq
+    txresp
+} -start
+
+varnish v1 -vcl+backend {
+    import lambda from "${vmod}";
+
+    sub vcl_deliver {
+        set resp.http.is-even-42 = lambda.is_even(42);
+        set resp.http.is-even-43 = lambda.is_even(43);
+        set resp.http.double-10 = lambda.double(10);
+        set resp.http.repeat-hello = lambda.repeat("hello");
+    }
+} -start
+
+client c1 {
+    txreq
+    rxresp
+    expect resp.http.is-even-42 == "true"
+    expect resp.http.is-even-43 == "false"
+    expect resp.http.double-10 == "20"
+    expect resp.http.repeat-hello == "hellohello"
+} -run

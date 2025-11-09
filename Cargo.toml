@@ -1,0 +1,14 @@
+[package]
+name = "vmod_lambda"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cdylib-plugin = "0.1"
+varnish = { version = "0.5.5", features = ["ffi"] }
+
+[build-dependencies]
+cdylib-plugin = "0.1"
