@@ -1,16 +1,24 @@
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
+use tokio::sync::Semaphore;
+use tokio::time::Duration;
 use aws_sdk_lambda::Client as LambdaClient;
 use aws_sdk_lambda::types::InvocationType;
 use bytes::Bytes;
 use std::error::Error;
+use std::sync::Arc;
+
+const MAX_CONCURRENT_INVOCATIONS: usize = 500_000;
+const DEFAULT_LAMBDA_TIMEOUT_SECS: u64 = 62;
 
 /// Background runtime for async Lambda invocations
 pub struct BgThread {
     #[allow(dead_code)]
     rt: Runtime,
     sender: UnboundedSender<(InvokeRequest, oneshot::Sender<Result<InvokeResponse, String>>)>,
+    #[allow(dead_code)]
+    concurrency_limit: Arc<Semaphore>,
 }
 
 /// Request to invoke a Lambda function
@@ -37,8 +45,10 @@ impl BgThread {
     fn new() -> Result<Self, Box<dyn Error>> {
         let rt = Runtime::new()?;
         let (sender, mut receiver) = mpsc::unbounded_channel::<(InvokeRequest, oneshot::Sender<Result<InvokeResponse, String>>)>();
+        let concurrency_limit = Arc::new(Semaphore::new(MAX_CONCURRENT_INVOCATIONS));
 
         // Spawn background task to process Lambda invocations
+        let semaphore = concurrency_limit.clone();
         rt.spawn(async move {
             // Initialize AWS config and Lambda client once
             let config = aws_config::load_from_env().await;
@@ -46,33 +56,45 @@ impl BgThread {
 
             while let Some((req, resp_tx)) = receiver.recv().await {
                 let client = lambda_client.clone();
+                let sem = semaphore.clone();
 
                 // Spawn a task for each Lambda invocation to allow concurrent processing
+                // Acquire permit to limit concurrency - this will block if at limit
                 tokio::spawn(async move {
+                    // Acquire permit (blocks if at MAX_CONCURRENT_INVOCATIONS)
+                    let _permit = sem.acquire().await.unwrap();
+
                     let result = invoke_lambda(&client, &req.function_name, req.payload).await;
                     let _ = resp_tx.send(result);
+
+                    // Permit is automatically released when _permit is dropped
                 });
             }
         });
 
-        Ok(BgThread { rt, sender })
+        Ok(BgThread { rt, sender, concurrency_limit })
     }
 }
 
-/// Invoke a Lambda function
 async fn invoke_lambda(
     client: &LambdaClient,
     function_name: &str,
     payload: Vec<u8>,
 ) -> Result<InvokeResponse, String> {
-    let result = client
+    let invoke_future = client
         .invoke()
         .function_name(function_name)
         .invocation_type(InvocationType::RequestResponse)
         .payload(aws_sdk_lambda::primitives::Blob::new(payload))
-        .send()
-        .await
-        .map_err(|e| format!("Lambda invocation failed: {}", e))?;
+        .send();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(DEFAULT_LAMBDA_TIMEOUT_SECS),
+        invoke_future
+    )
+    .await
+    .map_err(|_| format!("Lambda invocation timed out after {}s", DEFAULT_LAMBDA_TIMEOUT_SECS))?
+    .map_err(|e| format!("Lambda invocation failed: {}", e))?;
 
     Ok(InvokeResponse {
         status_code: result.status_code(),
