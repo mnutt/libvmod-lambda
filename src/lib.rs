@@ -5,6 +5,7 @@ use tokio::sync::Semaphore;
 use tokio::time::Duration;
 use aws_sdk_lambda::Client as LambdaClient;
 use aws_sdk_lambda::types::InvocationType;
+use aws_types::region::Region;
 use bytes::Bytes;
 use std::error::Error;
 use std::sync::Arc;
@@ -23,6 +24,7 @@ pub struct BgThread {
 struct InvokeRequest {
     function_name: String,
     payload: Vec<u8>,
+    client: LambdaClient,
 }
 
 /// Response from Lambda invocation
@@ -37,6 +39,10 @@ struct InvokeResponse {
 pub struct Backend {
     function_name: String,
     region: String,
+    endpoint_url: Option<String>,
+    client: LambdaClient,
+    #[allow(dead_code)]
+    runtime: Runtime,
 }
 
 impl BgThread {
@@ -46,17 +52,13 @@ impl BgThread {
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_INVOCATIONS));
 
         rt.spawn(async move {
-            let config = aws_config::load_from_env().await;
-            let lambda_client = LambdaClient::new(&config);
-
             while let Some((req, resp_tx)) = receiver.recv().await {
-                let client = lambda_client.clone();
                 let sem = semaphore.clone();
 
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await.expect("semaphore closed");
 
-                    let result = invoke_lambda(&client, &req.function_name, req.payload).await;
+                    let result = invoke_lambda(&req.client, &req.function_name, req.payload).await;
                     let _ = resp_tx.send(result);
                 });
             }
@@ -118,10 +120,36 @@ mod lambda {
             function_name: &str,
             /// AWS region (e.g., "us-east-1")
             region: &str,
+            /// Optional custom endpoint URL (e.g., for LocalStack). Pass empty string to use default.
+            endpoint_url: &str,
         ) -> Self {
+            // Create the Lambda client with the specified region and optional endpoint
+            let endpoint_url_opt = if endpoint_url.is_empty() {
+                None
+            } else {
+                Some(endpoint_url.to_string())
+            };
+
+            // Create a runtime for this backend - it will persist for the backend's lifetime
+            // The AWS SDK client needs the runtime to stay alive for HTTP operations
+            let runtime = Runtime::new().expect("Failed to create runtime");
+            let region_obj = Region::new(region.to_string());
+            let endpoint_for_client = endpoint_url_opt.clone();
+            let client = runtime.block_on(async move {
+                let mut config = aws_config::from_env().region(region_obj);
+                if let Some(url) = endpoint_for_client {
+                    config = config.endpoint_url(url);
+                }
+                let config = config.load().await;
+                LambdaClient::new(&config)
+            });
+
             Backend {
                 function_name: function_name.to_string(),
                 region: region.to_string(),
+                endpoint_url: endpoint_url_opt,
+                client,
+                runtime,
             }
         }
 
@@ -138,6 +166,7 @@ mod lambda {
             let req = InvokeRequest {
                 function_name: self.function_name.clone(),
                 payload: payload.as_bytes().to_vec(),
+                client: self.client.clone(),
             };
 
             let (tx, rx) = oneshot::channel();
