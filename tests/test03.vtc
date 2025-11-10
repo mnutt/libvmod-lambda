@@ -1,0 +1,96 @@
+varnishtest "Test lambda vmod as backend with health probe"
+
+# Mock Lambda endpoint
+server s1 {
+    # Health probe requests (these come first when VCL loads)
+    rxreq
+    expect req.url == "/2015-03-31/functions/my-backend-function/invocations"
+    txresp -status 200 \
+        -hdr "Content-Type: application/json" \
+        -body {{"health": "ok"}}
+
+    rxreq
+    expect req.url == "/2015-03-31/functions/my-backend-function/invocations"
+    txresp -status 200 \
+        -hdr "Content-Type: application/json" \
+        -body {{"health": "ok"}}
+
+    # Backend fetch request (comes after delay)
+    rxreq
+    expect req.url == "/2015-03-31/functions/my-backend-function/invocations"
+    expect req.method == "POST"
+    expect req.http.X-Amz-Invocation-Type == "RequestResponse"
+
+    # Return Lambda response
+    txresp -status 200 \
+        -hdr "Content-Type: application/json" \
+        -hdr "x-amzn-RequestId: backend-request-123" \
+        -hdr "X-Amz-Executed-Version: $LATEST" \
+        -body {{"statusCode": 200, "body": "{\"message\": \"Hello from Lambda backend\"}"}}
+} -start
+
+varnish v1 -vcl {
+    import lambda from "${vmod}";
+    import std;
+
+    backend default none;
+
+    probe health_check {
+        .url = "/health";
+        .interval = 2s;
+        .timeout = 1s;
+        .window = 3;
+        .threshold = 2;
+    }
+
+    sub vcl_init {
+        new my_lambda = lambda.backend(
+            function_name="my-backend-function",
+            region="us-west-2",
+            endpoint_url="http://${s1_addr}:${s1_port}",
+            timeout=5s,
+            probe=health_check,
+            probe_payload={"{"healthcheck": true}"}
+        );
+    }
+
+    sub vcl_recv {
+        # Route to Lambda backend
+        return (pass);
+    }
+
+    sub vcl_backend_fetch {
+        # Use Lambda as the backend
+        set bereq.backend = my_lambda.backend();
+    }
+
+    sub vcl_backend_response {
+        # Backend response comes from Lambda
+        return (deliver);
+    }
+
+    sub vcl_deliver {
+        # Add debugging headers
+        set resp.http.X-Function-Name = my_lambda.get_function_name();
+        set resp.http.X-Region = my_lambda.get_region();
+    }
+} -start
+
+# Wait for probe to establish health
+delay 3
+
+client c1 {
+    txreq -url "/test"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Content-Type == "application/json"
+    expect resp.http.X-Function-Name == "my-backend-function"
+    expect resp.http.X-Region == "us-west-2"
+    # Verify we got the Lambda response body
+    expect resp.body ~ "Hello from Lambda backend"
+} -run
+
+# Display backend status (informational only, non-asserting)
+shell {
+    varnishadm -n ${v1_name} backend.list -p
+}
