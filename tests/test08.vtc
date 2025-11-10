@@ -1,0 +1,48 @@
+varnishtest "Test lambda backend with JSON response mode (raw_response_mode=false)"
+
+# Mock Lambda endpoint that returns a JSON response with headers and body
+server s1 {
+    rxreq
+    expect req.url == "/2015-03-31/functions/json-response-test/invocations"
+    expect req.method == "POST"
+    expect req.http.X-Amz-Invocation-Type == "RequestResponse"
+
+    # Return Lambda response with JSON payload containing status, headers, and body
+    txresp -status 200 \
+        -hdr "Content-Type: application/json" \
+        -hdr "x-amzn-RequestId: test-request-id" \
+        -body {{"statusCode": 201, "statusDescription": "201 Created", "headers": {"X-Custom-Header": "custom-value", "Content-Type": "application/json"}, "body": "{\"message\":\"resource created\"}", "isBase64Encoded": false}}
+} -start
+
+varnish v1 -vcl {
+    import lambda from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new my_lambda = lambda.backend(
+            function_name="json-response-test",
+            region="us-east-1",
+            endpoint_url="http://${s1_addr}:${s1_port}",
+            raw_response_mode=false
+        );
+    }
+
+    sub vcl_recv {
+        return (pass);
+    }
+
+    sub vcl_backend_fetch {
+        set bereq.backend = my_lambda.backend();
+    }
+} -start
+
+client c1 {
+    txreq -url "/api/create" \
+        -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 201
+    expect resp.http.X-Custom-Header == "custom-value"
+    expect resp.http.Content-Type == "application/json"
+    expect resp.body == {{"message":"resource created"}}
+} -run

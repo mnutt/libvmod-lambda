@@ -7,13 +7,13 @@ server s1 {
     expect req.url == "/2015-03-31/functions/my-backend-function/invocations"
     txresp -status 200 \
         -hdr "Content-Type: application/json" \
-        -body {{"health": "ok"}}
+        -body {{"statusCode": 200, "body": "{\"health\": \"ok\"}"}}
 
     rxreq
     expect req.url == "/2015-03-31/functions/my-backend-function/invocations"
     txresp -status 200 \
         -hdr "Content-Type: application/json" \
-        -body {{"health": "ok"}}
+        -body {{"statusCode": 200, "body": "{\"health\": \"ok\"}"}}
 
     # Backend fetch request (comes after delay)
     rxreq
@@ -26,7 +26,7 @@ server s1 {
         -hdr "Content-Type: application/json" \
         -hdr "x-amzn-RequestId: backend-request-123" \
         -hdr "X-Amz-Executed-Version: $LATEST" \
-        -body {{"statusCode": 200, "body": "{\"message\": \"Hello from Lambda backend\"}"}}
+        -body {{"statusCode": 200, "headers": {"Content-Type": "application/json"}, "body": "{\"message\": \"Hello from Lambda backend\"}"}}
 } -start
 
 varnish v1 -vcl {

@@ -17,7 +17,7 @@ import lambda;
 import lambda from "path/to/liblambda.so";
 ```
 
-### Constructor `lambda.backend(STRING function_name, STRING region, [STRING endpoint_url], [DURATION timeout], [PROBE probe], STRING probe_payload = "{}")`
+### Constructor `lambda.backend(STRING function_name, STRING region, [STRING endpoint_url], [DURATION timeout], [PROBE probe], STRING probe_payload = "{}", BOOL raw_response_mode = 0)`
 
 Create a new Lambda backend
 
@@ -33,6 +33,8 @@ Lambda invocation timeout in seconds (default: 62)
 Health probe configuration. If specified, you should also provide probe_payload
 * `STRING probe_payload`:
 JSON payload to use for health checks
+* `BOOL raw_response_mode`:
+Whether to expect raw HTTP responses instead of JSON (default: false)
 
 #### Method `STRING <object>.invoke(STRING payload)`
 

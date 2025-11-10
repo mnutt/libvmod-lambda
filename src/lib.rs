@@ -41,6 +41,9 @@ mod lambda {
             /// JSON payload to use for health checks
             #[default("{}")]
             probe_payload: &str,
+            /// Whether to expect raw HTTP responses instead of JSON (default: false)
+            #[default(false)]
+            raw_response_mode: bool,
         ) -> Result<Self, VclError> {
             // Create the Lambda client with the specified region and optional endpoint
             let endpoint_url_opt = endpoint_url.map(String::from);
@@ -100,6 +103,7 @@ mod lambda {
                     client: client.clone(),
                     timeout_secs,
                     probe_state,
+                    raw_response_mode,
                 },
                 has_probe,
             )?;

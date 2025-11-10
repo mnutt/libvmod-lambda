@@ -36,6 +36,21 @@ pub mod lambda_private {
         is_base64_encoded: bool,
     }
 
+    /// Lambda HTTP response payload (JSON mode)
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LambdaHttpResponse {
+        #[serde(default)]
+        is_base64_encoded: bool,
+        status_code: u16,
+        #[serde(default)]
+        status_description: Option<String>,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+        #[serde(default)]
+        body: Option<String>,
+    }
+
     /// Check if a content-type indicates text content
     fn is_text_content_type(content_type: &str) -> bool {
         let ct_lower = content_type.to_lowercase();
@@ -71,6 +86,77 @@ pub mod lambda_private {
                 (url_str.to_string(), BTreeMap::new())
             }
         }
+    }
+
+    /// Parse JSON response from Lambda
+    fn parse_json_response(payload: &[u8]) -> VclResult<(u16, BTreeMap<String, String>, Vec<u8>)> {
+        let response: LambdaHttpResponse = serde_json::from_slice(payload)
+            .map_err(|e| format!("Failed to parse Lambda JSON response: {}", e))?;
+
+        let body_bytes = if let Some(body) = response.body {
+            if response.is_base64_encoded {
+                BASE64.decode(body.as_bytes())
+                    .map_err(|e| format!("Failed to decode base64 body: {}", e))?
+            } else {
+                body.into_bytes()
+            }
+        } else {
+            Vec::new()
+        };
+
+        Ok((response.status_code, response.headers, body_bytes))
+    }
+
+    /// Parse raw HTTP response from Lambda
+    fn parse_raw_http_response(payload: &[u8]) -> VclResult<(u16, BTreeMap<String, String>, Vec<u8>)> {
+        let response_str = std::str::from_utf8(payload)
+            .map_err(|e| format!("Invalid UTF-8 in raw HTTP response: {}", e))?;
+
+        let mut lines = response_str.lines();
+
+        // Parse status line: "HTTP/1.1 200 OK"
+        let status_line = lines.next()
+            .ok_or("Empty HTTP response")?;
+
+        let status_code = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .ok_or_else(|| format!("Invalid HTTP status line: {}", status_line))?;
+
+        // Parse headers
+        let mut headers = BTreeMap::new();
+        let mut body_start = 0;
+
+        for (idx, line) in lines.enumerate() {
+            if line.is_empty() {
+                // Empty line marks end of headers
+                // Calculate byte offset for body start
+                // Note: lines() strips \r\n, but actual data has \r\n (2 bytes)
+                body_start = status_line.len() + 2; // +2 for \r\n
+                for h_line in response_str.lines().take(idx + 1).skip(1) {
+                    body_start += h_line.len() + 2; // +2 for \r\n
+                }
+                body_start += 2; // Final empty line \r\n
+                break;
+            }
+
+            if let Some((name, value)) = line.split_once(':') {
+                headers.insert(
+                    name.trim().to_lowercase(),
+                    value.trim().to_string()
+                );
+            }
+        }
+
+        // Extract body
+        let body_bytes = if body_start < payload.len() {
+            payload[body_start..].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        Ok((status_code, headers, body_bytes))
     }
 
     const MAX_CONCURRENT_INVOCATIONS: usize = 500_000;
@@ -124,6 +210,7 @@ pub mod lambda_private {
         pub client: LambdaClient,
         pub timeout_secs: u64,
         pub probe_state: Option<ProbeState>,
+        pub raw_response_mode: bool,
     }
 
     /// Backend response implementation
@@ -406,13 +493,29 @@ pub mod lambda_private {
                         return Err(format!("Lambda error: {err}").into());
                     }
 
+                    let Some(payload) = resp.payload else {
+                        return Err("Empty Lambda response".into());
+                    };
+
+                    // Parse response based on mode
+                    let (status_code, headers, body_bytes) = if self.raw_response_mode {
+                        parse_raw_http_response(&payload)?
+                    } else {
+                        parse_json_response(&payload)?
+                    };
+
+                    // Set response status and headers
                     let beresp = ctx.http_beresp.as_mut().unwrap();
-                    beresp.set_status(u16::try_from(resp.status_code).unwrap_or(500));
+                    beresp.set_status(status_code);
                     beresp.set_proto("HTTP/1.1")?;
-                    beresp.set_header("Content-Type", "application/json")?;
+
+                    // Set all headers from the response
+                    for (name, value) in headers {
+                        beresp.set_header(&name, &value)?;
+                    }
 
                     Ok(Some(BackendResp {
-                        payload: resp.payload,
+                        payload: Some(Bytes::from(body_bytes)),
                         cursor: 0,
                     }))
                 }
