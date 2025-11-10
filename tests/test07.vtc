@@ -1,0 +1,54 @@
+varnishtest "Test lambda backend with POST binary body"
+
+# Mock Lambda endpoint that validates binary body is base64 encoded
+server s1 {
+    rxreq
+    expect req.url == "/2015-03-31/functions/binary-test/invocations"
+    expect req.method == "POST"
+    expect req.http.X-Amz-Invocation-Type == "RequestResponse"
+
+    # Validate the exact JSON payload body (keys are sorted due to BTreeMap)
+    # The body "hello" should be base64 encoded as "aGVsbG8="
+    expect req.body == {{"httpMethod":"POST","path":"/upload","queryStringParameters":{},"headers":{"content-length":"5","content-type":"application/octet-stream","host":"example.com","user-agent":"c1","via":"1.1 v1 (Varnish/7.7)","x-forwarded-for":"127.0.0.1","x-varnish":"1002"},"body":"aGVsbG8=","isBase64Encoded":true}}
+
+    # Return Lambda response
+    txresp -status 200 \
+        -hdr "Content-Type: application/json" \
+        -hdr "x-amzn-RequestId: test-request-id" \
+        -body {{"statusCode": 200, "body": "{\"uploaded\":true}"}}
+} -start
+
+varnish v1 -vcl {
+    import lambda from "${vmod}";
+    import std;
+
+    backend default none;
+
+    sub vcl_init {
+        new my_lambda = lambda.backend(
+            function_name="binary-test",
+            region="us-east-1",
+            endpoint_url="http://${s1_addr}:${s1_port}"
+        );
+    }
+
+    sub vcl_recv {
+        # Cache the request body so it can be read in backend_fetch
+        std.cache_req_body(1KB);
+        return (pass);
+    }
+
+    sub vcl_backend_fetch {
+        set bereq.backend = my_lambda.backend();
+    }
+} -start
+
+client c1 {
+    txreq -req POST -url "/upload" \
+        -hdr "Host: example.com" \
+        -hdr "Content-Type: application/octet-stream" \
+        -body "hello"
+    rxresp
+    expect resp.status == 200
+    expect resp.body ~ "uploaded"
+} -run

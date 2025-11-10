@@ -13,8 +13,65 @@ pub mod lambda_private {
     use std::sync::Mutex;
     use std::time::{Duration, Instant, SystemTime};
     use std::io::Write;
+    use std::collections::BTreeMap;
+    use serde::{Deserialize, Serialize};
+    use url::Url;
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use std::os::raw::{c_uint, c_void};
 
     use varnish::vcl::{Backend, Buffer, Ctx, Event, LogTag, Probe, VclBackend, VclError, VclResponse, VclResult, log};
+    use varnish::ffi::{BS_NONE, VRB_Iterate, ObjIterate};
+
+    /// Lambda HTTP request payload
+    #[derive(Debug, Serialize, Deserialize)]
+    struct LambdaHttpRequest {
+        #[serde(rename = "httpMethod")]
+        http_method: String,
+        path: String,
+        #[serde(rename = "queryStringParameters")]
+        query_string_parameters: BTreeMap<String, String>,
+        headers: BTreeMap<String, String>,
+        body: String,
+        #[serde(rename = "isBase64Encoded")]
+        is_base64_encoded: bool,
+    }
+
+    /// Check if a content-type indicates text content
+    fn is_text_content_type(content_type: &str) -> bool {
+        let ct_lower = content_type.to_lowercase();
+        ct_lower.starts_with("text/")
+            || ct_lower.starts_with("application/json")
+            || ct_lower.starts_with("application/javascript")
+            || ct_lower.starts_with("application/xml")
+            || ct_lower.starts_with("application/x-www-form-urlencoded")
+    }
+
+    /// Parse URL into path and query string parameters
+    fn parse_url(url_str: &str) -> (String, BTreeMap<String, String>) {
+        // Varnish typically provides just the path, so we need a base URL for parsing
+        let full_url = if url_str.starts_with("http://") || url_str.starts_with("https://") {
+            url_str.to_string()
+        } else {
+            format!("http://dummy{}", url_str)
+        };
+
+        match Url::parse(&full_url) {
+            Ok(url) => {
+                let path = url.path().to_string();
+                let mut query_params = BTreeMap::new();
+
+                for (key, value) in url.query_pairs() {
+                    query_params.insert(key.to_string(), value.to_string());
+                }
+
+                (path, query_params)
+            }
+            Err(_) => {
+                // Fallback to just the path if parsing fails
+                (url_str.to_string(), BTreeMap::new())
+            }
+        }
+    }
 
     const MAX_CONCURRENT_INVOCATIONS: usize = 500_000;
     pub const DEFAULT_LAMBDA_TIMEOUT_SECS: u64 = 62;
@@ -236,19 +293,102 @@ pub mod lambda_private {
                 return Err("unhealthy".into());
             }
 
-            let _bereq = ctx.http_bereq.as_ref().unwrap();
+            let bereq = ctx.http_bereq.as_ref().unwrap();
 
-            // Get payload from request body
-            let payload = unsafe {
+            // Extract HTTP method
+            let http_method = bereq.method()
+                .map(|m| String::from_utf8_lossy(m.as_ref()).to_string())
+                .unwrap_or_else(|| "GET".to_string());
+
+            // Extract URL and parse path/query
+            let url = bereq.url()
+                .map(|u| String::from_utf8_lossy(u.as_ref()).to_string())
+                .unwrap_or_else(|| "/".to_string());
+            let (path, query_string_parameters) = parse_url(&url);
+
+            // Extract headers
+            let mut headers = BTreeMap::new();
+            for (name, value) in bereq {
+                let value_str = String::from_utf8_lossy(value.as_ref()).to_string();
+                headers.insert(name.to_lowercase(), value_str);
+            }
+
+            // Determine content type
+            let content_type = headers.get("content-type")
+                .map(|s| s.as_str())
+                .unwrap_or("");
+
+            // Get request body
+            // In backend context, we need to access the cached body through ObjIterate or VRB_Iterate
+            let (body, is_base64_encoded) = unsafe {
+                // Callback function to collect body chunks
+                unsafe extern "C" fn body_collect_iterate(
+                    priv_: *mut c_void,
+                    _flush: c_uint,
+                    ptr: *const c_void,
+                    l: isize,
+                ) -> i32 {
+                    // nothing to do
+                    if ptr.is_null() || l == 0 {
+                        return 0;
+                    }
+                    unsafe {
+                        let body_vec = priv_.cast::<Vec<u8>>().as_mut().unwrap();
+                        #[expect(clippy::cast_sign_loss)]
+                        let buf = std::slice::from_raw_parts(ptr.cast::<u8>(), l as usize);
+                        body_vec.extend_from_slice(buf);
+                    }
+                    0
+                }
+
                 let bo = ctx.raw.bo.as_mut().unwrap();
-                if !bo.bereq_body.is_null() {
-                    // TODO: Read actual body from bereq_body
-                    // For now, use empty payload
-                    Vec::new()
+                let mut body_bytes = Vec::new();
+                let p = (&raw mut body_bytes).cast::<c_void>();
+
+                // Check if there's a request body
+                // Try ObjIterate first (when bereq_body is available), otherwise VRB_Iterate
+                let result = if bo.bereq_body.is_null() {
+                    if !bo.req.is_null() && (*bo.req).req_body_status != BS_NONE.as_ptr() {
+                        VRB_Iterate(
+                            bo.wrk,
+                            bo.vsl.as_mut_ptr(),
+                            bo.req,
+                            Some(body_collect_iterate),
+                            p,
+                        )
+                    } else {
+                        -1  // No body available
+                    }
                 } else {
-                    Vec::new()
+                    ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_collect_iterate), 0) as isize
+                };
+
+                if result < 0 || body_bytes.is_empty() {
+                    (String::new(), false)
+                } else if is_text_content_type(content_type) {
+                    // Text content - use as-is
+                    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+                    (body_str, false)
+                } else {
+                    // Binary content - base64 encode
+                    let encoded = BASE64.encode(&body_bytes);
+                    (encoded, true)
                 }
             };
+
+            // Build Lambda HTTP request payload
+            let lambda_request = LambdaHttpRequest {
+                http_method,
+                path,
+                query_string_parameters,
+                headers,
+                body,
+                is_base64_encoded,
+            };
+
+            // Serialize to JSON
+            let payload = serde_json::to_vec(&lambda_request)
+                .map_err(|e| format!("Failed to serialize request: {}", e))?;
 
             let req = InvokeRequest {
                 function_name: self.function_name.clone(),
