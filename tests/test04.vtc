@@ -2,7 +2,7 @@ varnishtest "Test lambda backend health probe failure handling"
 
 # Mock Lambda endpoint that starts healthy then fails
 server s1 {
-    # Initial probe - healthy
+    # First probe - healthy
     rxreq
     txresp -status 200 -body {{"statusCode": 200, "body": "{\"health\": \"ok\"}"}}
 
@@ -13,7 +13,6 @@ server s1 {
         -hdr "Content-Type: application/json" \
         -body {{"statusCode": 200, "body": "{\"message\": \"Success\"}"}}
 
-    # Second probe - failing (this marks backend unhealthy: 1/3 < threshold 2/3)
     rxreq
     txresp -status 500 -body "Internal error"
 } -start
@@ -37,8 +36,7 @@ varnish v1 -vcl {
             function_name="probe-test",
             region="us-east-1",
             endpoint_url="http://${s1_addr}:${s1_port}",
-            probe=lambda_probe,
-            probe_payload={"{"probe": true}"}
+            probe=lambda_probe
         );
     }
 

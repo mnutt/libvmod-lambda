@@ -664,7 +664,6 @@ pub mod lambda_private {
 
     pub fn build_probe_state(
         mut probe: Probe,
-        probe_payload: &str,
     ) -> Result<ProbeState, VclError> {
         // Sanitize probe (see vbp_set_defaults in Varnish Cache)
         if probe.timeout.is_zero() {
@@ -684,12 +683,37 @@ pub mod lambda_private {
         }
         probe.initial = std::cmp::min(probe.initial, probe.threshold);
 
+        // Construct Lambda HTTP request from probe definition
+        use varnish::vcl::Request;
+        let payload = match &probe.request {
+            Request::Url(url) => {
+                // Construct a GET request to the specified URL path
+                let lambda_request = LambdaHttpRequest {
+                    http_method: "GET".to_string(),
+                    path: url.to_string(),
+                    query_string_parameters: BTreeMap::new(),
+                    headers: BTreeMap::new(),
+                    body: String::new(),
+                    is_base64_encoded: false,
+                };
+                serde_json::to_string(&lambda_request)
+                    .map_err(|e| VclError::new(format!("Failed to serialize probe request: {}", e)))?
+            }
+            Request::Text(_) => {
+                // TODO: Parse full HTTP request text into LambdaHttpRequest
+                // For now, text-based probes are not supported
+                return Err(VclError::new(
+                    "Text-based probe requests (.request) are not yet supported. Use .url instead".to_string()
+                ));
+            }
+        };
+
         Ok(ProbeState {
             spec: probe,
             history: AtomicU64::new(0),
             health_changed: SystemTime::now(),
             join_handle: None,
-            payload: probe_payload.to_string(),
+            payload,
             avg: Mutex::new(0_f64),
         })
     }

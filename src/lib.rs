@@ -36,11 +36,8 @@ mod lambda {
             endpoint_url: Option<&str>,
             /// Lambda invocation timeout in seconds (default: 62)
             timeout: Option<Duration>,
-            /// Health probe configuration. If specified, you should also provide probe_payload
+            /// Health probe configuration
             probe: Option<Probe>,
-            /// JSON payload to use for health checks
-            #[default("{}")]
-            probe_payload: &str,
             /// Whether to expect raw HTTP responses instead of JSON (default: false)
             #[default(false)]
             raw_response_mode: bool,
@@ -84,7 +81,7 @@ mod lambda {
                 .unwrap_or(DEFAULT_LAMBDA_TIMEOUT_SECS);
 
             let probe_state = match probe {
-                Some(spec) => Some(build_probe_state(spec, probe_payload).map_err(|e| {
+                Some(spec) => Some(build_probe_state(spec).map_err(|e| {
                     VclError::new(format!("lambda: failed to add probe to {vcl_name} ({e})"))
                 })?),
                 None => None,

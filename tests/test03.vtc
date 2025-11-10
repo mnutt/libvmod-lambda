@@ -49,8 +49,7 @@ varnish v1 -vcl {
             region="us-west-2",
             endpoint_url="http://${s1_addr}:${s1_port}",
             timeout=5s,
-            probe=health_check,
-            probe_payload={"{"healthcheck": true}"}
+            probe=health_check
         );
     }
 
