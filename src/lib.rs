@@ -121,15 +121,11 @@ mod lambda {
             function_name: &str,
             /// AWS region (e.g., "us-east-1")
             region: &str,
-            /// Optional custom endpoint URL (e.g., for LocalStack). Pass empty string to use default.
-            endpoint_url: &str,
+            /// Optional custom endpoint URL (e.g., for LocalStack)
+            endpoint_url: Option<&str>,
         ) -> Self {
             // Create the Lambda client with the specified region and optional endpoint
-            let endpoint_url_opt = if endpoint_url.is_empty() {
-                None
-            } else {
-                Some(endpoint_url.to_string())
-            };
+            let endpoint_url_opt = endpoint_url.map(String::from);
 
             // Use the BgThread's runtime to initialize the AWS client
             // This ensures the client is created in the same runtime context it will be used in
