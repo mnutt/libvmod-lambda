@@ -1,14 +1,16 @@
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{self, UnboundedSender};
-use tokio::sync::oneshot;
 use tokio::sync::Semaphore;
 use tokio::time::Duration;
 use aws_sdk_lambda::Client as LambdaClient;
+use aws_sdk_lambda::config::Builder as LambdaConfigBuilder;
 use aws_sdk_lambda::types::InvocationType;
 use aws_types::region::Region;
+use aws_credential_types::Credentials;
 use bytes::Bytes;
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::mpsc as std_mpsc;
 
 const MAX_CONCURRENT_INVOCATIONS: usize = 500_000;
 const DEFAULT_LAMBDA_TIMEOUT_SECS: u64 = 62;
@@ -17,7 +19,7 @@ const DEFAULT_LAMBDA_TIMEOUT_SECS: u64 = 62;
 pub struct BgThread {
     #[allow(dead_code)]
     rt: Runtime,
-    sender: UnboundedSender<(InvokeRequest, oneshot::Sender<Result<InvokeResponse, String>>)>,
+    sender: UnboundedSender<(InvokeRequest, std_mpsc::Sender<Result<InvokeResponse, String>>)>,
 }
 
 /// Request to invoke a Lambda function
@@ -39,16 +41,13 @@ struct InvokeResponse {
 pub struct Backend {
     function_name: String,
     region: String,
-    endpoint_url: Option<String>,
     client: LambdaClient,
-    #[allow(dead_code)]
-    runtime: Runtime,
 }
 
 impl BgThread {
     fn new() -> Result<Self, Box<dyn Error>> {
         let rt = Runtime::new()?;
-        let (sender, mut receiver) = mpsc::unbounded_channel::<(InvokeRequest, oneshot::Sender<Result<InvokeResponse, String>>)>();
+        let (sender, mut receiver) = mpsc::unbounded_channel::<(InvokeRequest, std_mpsc::Sender<Result<InvokeResponse, String>>)>();
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_INVOCATIONS));
 
         rt.spawn(async move {
@@ -86,7 +85,7 @@ async fn invoke_lambda(
     )
     .await
     .map_err(|_| format!("Lambda invocation timed out after {}s", DEFAULT_LAMBDA_TIMEOUT_SECS))?
-    .map_err(|e| format!("Lambda invocation failed: {}", e))?;
+    .map_err(|e| format!("Lambda invocation failed: {:?}", e))?;
 
     Ok(InvokeResponse {
         status_code: result.status_code(),
@@ -116,6 +115,7 @@ mod lambda {
         pub fn new(
             _ctx: &Ctx,
             #[vcl_name] _vcl_name: &str,
+            #[shared_per_vcl] vp_vcl: &mut Option<Box<BgThread>>,
             /// Lambda function name or ARN
             function_name: &str,
             /// AWS region (e.g., "us-east-1")
@@ -130,26 +130,41 @@ mod lambda {
                 Some(endpoint_url.to_string())
             };
 
-            // Create a runtime for this backend - it will persist for the backend's lifetime
-            // The AWS SDK client needs the runtime to stay alive for HTTP operations
-            let runtime = Runtime::new().expect("Failed to create runtime");
+            // Use the BgThread's runtime to initialize the AWS client
+            // This ensures the client is created in the same runtime context it will be used in
+            let bg = vp_vcl.as_ref().expect("BgThread not initialized");
             let region_obj = Region::new(region.to_string());
             let endpoint_for_client = endpoint_url_opt.clone();
-            let client = runtime.block_on(async move {
-                let mut config = aws_config::from_env().region(region_obj);
+            let client = bg.rt.block_on(async move {
+                // For testing with mock endpoints, we need to configure the SDK to allow HTTP
+                let sdk_config = if endpoint_for_client.is_some() {
+                    // Mock/test configuration: use dummy credentials and allow HTTP
+                    aws_config::defaults(aws_config::BehaviorVersion::latest())
+                        .region(region_obj.clone())
+                        .credentials_provider(Credentials::new(
+                            "test", "test", None, None, "test"
+                        ))
+                        .load()
+                        .await
+                } else {
+                    // Production configuration: use real credentials from environment
+                    aws_config::from_env()
+                        .region(region_obj.clone())
+                        .load()
+                        .await
+                };
+
+                let mut lambda_config = LambdaConfigBuilder::from(&sdk_config);
                 if let Some(url) = endpoint_for_client {
-                    config = config.endpoint_url(url);
+                    lambda_config = lambda_config.endpoint_url(url);
                 }
-                let config = config.load().await;
-                LambdaClient::new(&config)
+                LambdaClient::from_conf(lambda_config.build())
             });
 
             Backend {
                 function_name: function_name.to_string(),
                 region: region.to_string(),
-                endpoint_url: endpoint_url_opt,
                 client,
-                runtime,
             }
         }
 
@@ -169,14 +184,11 @@ mod lambda {
                 client: self.client.clone(),
             };
 
-            let (tx, rx) = oneshot::channel();
+            let (tx, rx) = std_mpsc::channel();
             bg.sender.send((req, tx))?;
 
             // Block until Lambda responds
-            // This uses tokio's block_in_place to allow other tasks to progress
-            let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(rx)
-            })??;
+            let result = rx.recv()??;
 
             // Return the payload as a string, or error message
             if let Some(error) = result.function_error {

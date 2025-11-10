@@ -1,0 +1,101 @@
+varnishtest "Test lambda vmod invoke with AWS-realistic mock endpoint"
+
+# Test 1: Successful Lambda invocation with proper AWS response format
+server s1 {
+    rxreq
+    # Validate AWS Lambda API request format
+    expect req.url == "/2015-03-31/functions/test-function/invocations"
+    expect req.method == "POST"
+    expect req.http.X-Amz-Invocation-Type == "RequestResponse"
+    expect req.http.Content-Type == "application/octet-stream"
+    # Validate payload is in request body
+    expect req.body == {{"input":"test"}}
+
+    # Return AWS Lambda response with proper headers and actual function output
+    txresp -status 200 \
+        -hdr "Content-Type: application/json" \
+        -hdr "x-amzn-RequestId: 8476a536-e9f4-11e8-9739-2dfe1c0e6d5c" \
+        -hdr "X-Amz-Executed-Version: $LATEST" \
+        -hdr "X-Amz-Log-Result: U1RBUlQgUmVxdWVzdElkOiA4NDc2YTUzNi1lOWY0LTExZTgtOTczOS0yZGZlMWMwZTZkNWMgVmVyc2lvbjogJExBVEVTVAo=" \
+        -body {{"message": "Hello from Lambda", "statusCode": 200, "requestReceived": {"input":"test"}}}
+} -start
+
+# Test 2: Lambda function error (handled error)
+server s2 {
+    rxreq
+    expect req.url == "/2015-03-31/functions/error-function/invocations"
+    expect req.http.X-Amz-Invocation-Type == "RequestResponse"
+
+    # Return error response with X-Amz-Function-Error header
+    txresp -status 200 \
+        -hdr "Content-Type: application/json" \
+        -hdr "x-amzn-RequestId: 1234-error-5678" \
+        -hdr "X-Amz-Function-Error: Unhandled" \
+        -hdr "X-Amz-Executed-Version: $LATEST" \
+        -body {{"errorMessage": "Something went wrong", "errorType": "Error", "stackTrace": []}}
+} -start
+
+varnish v1 -vcl {
+    import lambda from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new my_lambda = lambda.backend(
+            function_name="test-function",
+            region="us-east-1",
+            endpoint_url="http://${s1_addr}:${s1_port}"
+        );
+        new error_lambda = lambda.backend(
+            function_name="error-function",
+            region="us-east-1",
+            endpoint_url="http://${s2_addr}:${s2_port}"
+        );
+    }
+
+    sub vcl_recv {
+        if (req.url == "/error") {
+            return (synth(200, "ERROR"));
+        }
+        return (synth(200, "OK"));
+    }
+
+    sub vcl_synth {
+        set resp.http.Content-Type = "application/json";
+
+        if (resp.reason == "ERROR") {
+            # Test error handling
+            set resp.http.X-Result = error_lambda.invoke("""{"action":"fail"}""");
+            synthetic(resp.http.X-Result);
+            return (deliver);
+        }
+
+        # Test successful invocation
+        set resp.http.X-Before-Invoke = "yes";
+        set resp.http.X-Result = my_lambda.invoke("""{"input":"test"}""");
+        set resp.http.X-After-Invoke = "yes";
+        synthetic(resp.http.X-Result);
+        return (deliver);
+    }
+} -start
+
+# Test successful Lambda invocation
+client c1 {
+    txreq
+    rxresp
+    expect resp.status == 200
+    expect resp.http.X-Before-Invoke == "yes"
+    expect resp.http.X-After-Invoke == "yes"
+    # Verify we get the actual Lambda function output, not metadata
+    expect resp.body ~ "Hello from Lambda"
+    expect resp.body ~ "requestReceived"
+} -run
+
+# Test Lambda error handling
+client c2 {
+    txreq -url "/error"
+    rxresp
+    # When Lambda returns X-Amz-Function-Error, the VMOD returns an error
+    # which causes VCL to fail with 500
+    expect resp.status == 500
+} -run
