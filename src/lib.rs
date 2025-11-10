@@ -27,6 +27,7 @@ struct InvokeRequest {
     function_name: String,
     payload: Vec<u8>,
     client: LambdaClient,
+    timeout_secs: u64,
 }
 
 /// Response from Lambda invocation
@@ -43,6 +44,7 @@ pub struct backend {
     function_name: String,
     region: String,
     client: LambdaClient,
+    timeout_secs: u64,
 }
 
 impl BgThread {
@@ -58,7 +60,7 @@ impl BgThread {
                 tokio::spawn(async move {
                     let _permit = sem.acquire().await.expect("semaphore closed");
 
-                    let result = invoke_lambda(&req.client, &req.function_name, req.payload).await;
+                    let result = invoke_lambda(&req.client, &req.function_name, req.payload, req.timeout_secs).await;
                     let _ = resp_tx.send(result);
                 });
             }
@@ -72,6 +74,7 @@ async fn invoke_lambda(
     client: &LambdaClient,
     function_name: &str,
     payload: Vec<u8>,
+    timeout_secs: u64,
 ) -> Result<InvokeResponse, String> {
     let invoke_future = client
         .invoke()
@@ -81,11 +84,11 @@ async fn invoke_lambda(
         .send();
 
     let result = tokio::time::timeout(
-        Duration::from_secs(DEFAULT_LAMBDA_TIMEOUT_SECS),
+        Duration::from_secs(timeout_secs),
         invoke_future
     )
     .await
-    .map_err(|_| format!("Lambda invocation timed out after {}s", DEFAULT_LAMBDA_TIMEOUT_SECS))?
+    .map_err(|_| format!("Lambda invocation timed out after {}s", timeout_secs))?
     .map_err(|e| format!("Lambda invocation failed: {:?}", e))?;
 
     Ok(InvokeResponse {
@@ -123,6 +126,8 @@ mod lambda {
             region: &str,
             /// Optional custom endpoint URL (e.g., for LocalStack)
             endpoint_url: Option<&str>,
+            /// Lambda invocation timeout in seconds (default: 62)
+            timeout: Option<Duration>,
         ) -> Self {
             // Create the Lambda client with the specified region and optional endpoint
             let endpoint_url_opt = endpoint_url.map(String::from);
@@ -162,6 +167,9 @@ mod lambda {
                 function_name: function_name.to_string(),
                 region: region.to_string(),
                 client,
+                timeout_secs: timeout
+                    .map(|d| d.as_secs())
+                    .unwrap_or(DEFAULT_LAMBDA_TIMEOUT_SECS),
             }
         }
 
@@ -179,6 +187,7 @@ mod lambda {
                 function_name: self.function_name.clone(),
                 payload: payload.as_bytes().to_vec(),
                 client: self.client.clone(),
+                timeout_secs: self.timeout_secs,
             };
 
             let (tx, rx) = std_mpsc::channel();
