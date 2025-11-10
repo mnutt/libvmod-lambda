@@ -38,7 +38,8 @@ struct InvokeResponse {
 }
 
 /// Lambda backend object
-pub struct Backend {
+#[allow(non_camel_case_types)]
+pub struct backend {
     function_name: String,
     region: String,
     client: LambdaClient,
@@ -110,7 +111,7 @@ mod lambda {
         }
     }
 
-    impl Backend {
+    impl backend {
         /// Create a new Lambda backend
         pub fn new(
             _ctx: &Ctx,
@@ -161,7 +162,7 @@ mod lambda {
                 LambdaClient::from_conf(lambda_config.build())
             });
 
-            Backend {
+            backend {
                 function_name: function_name.to_string(),
                 region: region.to_string(),
                 client,

@@ -1,0 +1,6 @@
+#!/bin/bash
+
+aws configure export-credentials \
+  --format env \
+  $@ \
+  > .aws-creds.env

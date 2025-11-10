@@ -2,3 +2,4 @@
 Cargo.lock
 *.dylib
 *.so
+.aws-creds.env
