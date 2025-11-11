@@ -37,7 +37,7 @@ varnish v1 -vcl {
 
     probe health_check {
         .url = "/health";
-        .interval = 2s;
+        .interval = 1s;
         .timeout = 1s;
         .window = 3;
         .threshold = 2;
@@ -76,7 +76,7 @@ varnish v1 -vcl {
 } -start
 
 # Wait for probe to establish health
-delay 3
+delay 1.5
 
 client c1 {
     txreq -url "/test"
