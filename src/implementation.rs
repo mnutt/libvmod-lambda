@@ -31,11 +31,19 @@ pub mod lambda_private {
     /// For production, uses credentials from the environment.
     pub async fn build_lambda_client(region: Region, endpoint_url: Option<String>) -> LambdaClient {
         let sdk_config = if endpoint_url.is_some() {
-            // Mock/test configuration: use dummy credentials and allow HTTP
+            // Custom endpoint configuration: use credentials from environment if available
+            let access_key = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_default();
+            let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default();
+            let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
+
             aws_config::defaults(aws_config::BehaviorVersion::latest())
                 .region(region.clone())
                 .credentials_provider(Credentials::new(
-                    "test", "test", None, None, "test"
+                    access_key,
+                    secret_key,
+                    session_token,
+                    None,
+                    "custom-endpoint"
                 ))
                 .load()
                 .await
