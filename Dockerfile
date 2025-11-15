@@ -49,7 +49,9 @@ COPY src ./src
 COPY tests ./tests
 
 # Build the vmod
-RUN cargo build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release
+
 
 # Find the correct vmod directory and install the vmod
 RUN VMOD_DIR=$(pkg-config --variable=vmoddir varnishapi) && \
