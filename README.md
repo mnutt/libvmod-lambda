@@ -4,7 +4,7 @@ A Varnish VMOD for invoking AWS Lambda functions from VCL. Built using varnish-r
 
 ## Overview
 
-This VMOD allows Varnish to invoke AWS Lambda functions as if they were backends.
+This VMOD allows Varnish to invoke AWS Lambda functions directly, and exposes them as backends.
 
 ## Building
 

@@ -26,9 +26,6 @@ pub mod lambda_private {
     use varnish::ffi::{BS_NONE, VRB_Iterate, ObjIterate};
 
     /// Build a Lambda client with the specified configuration
-    ///
-    /// For mock/test endpoints, uses dummy credentials.
-    /// For production, uses credentials from the environment.
     pub async fn build_lambda_client(region: Region, endpoint_url: Option<String>) -> LambdaClient {
         let sdk_config = if endpoint_url.is_some() {
             // Custom endpoint configuration: use credentials from environment if available
