@@ -1,17 +1,10 @@
 # libvmod-lambda
 
-A Varnish VMOD for invoking AWS Lambda functions from VCL. Built with Rust using varnish-rs and the AWS SDK.
+A Varnish VMOD for invoking AWS Lambda functions from VCL. Built using varnish-rs and the AWS SDK.
 
 ## Overview
 
-This VMOD allows Varnish to invoke AWS Lambda functions as if they were backends. It's designed for high-throughput scenarios (10,000+ req/s) with thousands of concurrent invocations.
-
-**Use Case:** Invoke Lambda functions for tasks like:
-- Headless browser rendering (WebKit, Chromium)
-- Image transformation and optimization
-- Dynamic content generation
-- Authentication and authorization
-- API gateway/proxy patterns
+This VMOD allows Varnish to invoke AWS Lambda functions as if they were backends.
 
 ## Building
 
@@ -37,65 +30,55 @@ No explicit credential configuration is needed if running on AWS infrastructure 
 
 ## Usage in VCL
 
-### Basic Example
+### Direct Invocation Example
 
 ```vcl
 import lambda;
 
 sub vcl_init {
-    new renderer = lambda.backend(
-        function_name="my-renderer-function",
+    new fn = lambda.backend(
+        function_name="my-lambda-function",
         region="us-east-1"
     );
 }
 
 sub vcl_recv {
     # Invoke Lambda with a JSON payload
-    set req.http.X-Lambda-Response = renderer.invoke(
+    set req.http.X-Lambda-Response = fn.invoke(
         "{\"url\": \"https://example.com\", \"viewport\": \"1920x1080\"}"
     );
+
+    return (synth(200));
 }
 ```
 
-### Backend Integration Example
+### Backend Example
+
+Use Lambda as a Varnish backend to proxy HTTP requests:
 
 ```vcl
 import lambda;
-import std;
+
+# Note that you pay for these lambda invocations, so make health check
+# fast and adjust interval accordingly
+probe lambda_probe {
+    .url = "/ok";
+    .timeout = 3s;
+    .interval = 5s;
+    .window = 5;
+    .threshold = 3;
+}
 
 sub vcl_init {
-    new screenshot = lambda.backend(
-        function_name="webkit-screenshot",
-        region="us-west-2"
+    new my_lambda = lambda.backend(
+        function_name="my-lambda",
+        region="us-east-2",
+        probe=lambda_probe
     );
 }
 
-sub vcl_recv {
-    if (req.url ~ "^/render/") {
-        # Extract URL from path
-        set req.http.X-Target-URL = regsub(req.url, "^/render/", "");
-
-        # Build Lambda payload
-        set req.http.X-Payload = "{" +
-            {"url": "} + req.http.X-Target-URL + {"", } +
-            {"format": "png", } +
-            {"width": 1920, } +
-            {"height": 1080"} +
-        "}";
-
-        # Invoke Lambda
-        set req.http.X-Image-Data = screenshot.invoke(req.http.X-Payload);
-
-        return (synth(200));
-    }
-}
-
-sub vcl_synth {
-    if (resp.status == 200 && req.http.X-Image-Data) {
-        set resp.http.Content-Type = "image/png";
-        synthetic(req.http.X-Image-Data);
-        return (deliver);
-    }
+sub vcl_backend_fetch {
+    set bereq.backend = my_lambda.backend();
 }
 ```
 
@@ -106,8 +89,12 @@ sub vcl_synth {
 Creates a new Lambda backend object.
 
 **Parameters:**
-- `function_name` (STRING): Lambda function name or ARN
-- `region` (STRING): AWS region (e.g., "us-east-1", "eu-west-1")
+- `function_name` (STRING, required): Lambda function name or ARN
+- `region` (STRING, required): AWS region (e.g., "us-east-1", "eu-west-1")
+- `endpoint_url` (STRING, optional): Custom endpoint URL (e.g., for LocalStack)
+- `timeout` (DURATION, optional): Lambda invocation timeout in seconds (default: 62s)
+- `probe` (PROBE, optional): Health probe configuration
+- `raw_response_mode` (BOOL, optional): Whether to expect raw HTTP responses instead of JSON (default: false)
 
 **Returns:** Backend object
 
@@ -116,7 +103,8 @@ Creates a new Lambda backend object.
 sub vcl_init {
     new my_function = lambda.backend(
         function_name="my-function",
-        region="us-east-1"
+        region="us-east-1",
+        timeout=30s
     );
 }
 ```
@@ -149,6 +137,19 @@ Returns the AWS region.
 
 **Returns:** STRING
 
+### backend.backend()
+
+Returns a VCL backend that can be used with `set bereq.backend` for proxying HTTP requests through Lambda.
+
+**Returns:** VCL_BACKEND
+
+**Example:**
+```vcl
+sub vcl_backend_fetch {
+    set bereq.backend = my_lambda.backend();
+}
+```
+
 ## Architecture
 
 ### Async Runtime
@@ -160,49 +161,16 @@ The VMOD uses a Tokio runtime in the background to handle concurrent Lambda invo
 - Each Lambda invocation runs as a separate async task
 - VCL threads block on oneshot channels waiting for responses
 
-### Scalability
-
-Designed to handle thousands of concurrent Lambda invocations:
-
-- **Connection Pooling:** AWS SDK client uses HTTP/2 connection pooling
-- **Async I/O:** No thread-per-request overhead
-- **Concurrent Execution:** Tokio multiplexes thousands of tasks on a single runtime
-- **Non-blocking VCL:** Worker threads queue requests and return to VCL processing
-
-Expected bottleneck is Lambda account concurrency limit (default 1000, can be increased to 10,000+), not the VMOD.
-
-### Error Handling
-
-Lambda errors are propagated back to VCL as exceptions. VCL can handle failures with standard error handling:
-
-```vcl
-if (req.http.X-Response) {
-    # Success
-} else {
-    # Lambda failed - fallback to default backend
-    set req.backend_hint = default;
-}
-```
-
-## Performance Considerations
-
 ### Timeouts
 
 Lambda functions have a maximum timeout of 15 minutes. However, synchronous invocations should complete much faster (typically < 30 seconds) to avoid blocking Varnish worker threads.
 
-### Payload Limits
+### Lambda Payload Limits
+
+AWS Lambda has some important limits to know about:
 
 - Maximum synchronous payload: 6 MB
 - Maximum response size: 6 MB
-
-### Latency
-
-Lambda invocation latency varies based on:
-- Cold starts (first invocation or after idle period)
-- Function execution time
-- Network latency to Lambda endpoints
-
-For the headless browser use case, expect p99 latencies of 5-30 seconds depending on page complexity.
 
 ## Requirements
 
