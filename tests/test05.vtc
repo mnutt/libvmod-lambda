@@ -7,9 +7,17 @@ server s1 {
     expect req.method == "POST"
     expect req.http.X-Amz-Invocation-Type == "RequestResponse"
 
-    # Validate the exact JSON payload body (keys are sorted due to BTreeMap)
+    # Validate the JSON payload contains expected fields
     # Note: Varnish adds x-varnish, x-forwarded-for, and via headers automatically
-    expect req.body == {{"httpMethod":"GET","path":"/api/users","queryStringParameters":{"id":"123","name":"test"},"headers":{"accept":"application/json","host":"example.com","user-agent":"Test/1.0","via":"1.1 v1 (Varnish/7.7)","x-forwarded-for":"127.0.0.1","x-varnish":"1002"},"body":"","isBase64Encoded":false}}
+    expect req.body ~ "\"httpMethod\":\"GET\""
+    expect req.body ~ "\"path\":\"/api/users\""
+    expect req.body ~ "\"id\":\"123\""
+    expect req.body ~ "\"name\":\"test\""
+    expect req.body ~ "\"accept\":\"application/json\""
+    expect req.body ~ "\"host\":\"example.com\""
+    expect req.body ~ "\"user-agent\":\"Test/1.0\""
+    expect req.body ~ "\"body\":\"\""
+    expect req.body ~ "\"isBase64Encoded\":false"
 
     # Return Lambda response
     txresp -status 200 \

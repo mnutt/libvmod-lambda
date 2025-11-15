@@ -16,7 +16,7 @@ pub mod lambda_private {
     use std::sync::Mutex;
     use std::time::{Duration, Instant, SystemTime};
     use std::io::Write;
-    use std::collections::BTreeMap;
+    use std::collections::HashMap;
     use serde::{Deserialize, Serialize};
     use url::Url;
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -69,8 +69,8 @@ pub mod lambda_private {
         http_method: String,
         path: String,
         #[serde(rename = "queryStringParameters")]
-        query_string_parameters: BTreeMap<String, String>,
-        headers: BTreeMap<String, String>,
+        query_string_parameters: HashMap<String, String>,
+        headers: HashMap<String, String>,
         body: String,
         #[serde(rename = "isBase64Encoded")]
         is_base64_encoded: bool,
@@ -86,7 +86,7 @@ pub mod lambda_private {
         #[serde(default)]
         status_description: Option<String>,
         #[serde(default)]
-        headers: BTreeMap<String, String>,
+        headers: HashMap<String, String>,
         #[serde(default)]
         body: Option<String>,
     }
@@ -102,7 +102,7 @@ pub mod lambda_private {
     }
 
     /// Parse URL into path and query string parameters
-    fn parse_url(url_str: &str) -> (String, BTreeMap<String, String>) {
+    fn parse_url(url_str: &str) -> (String, HashMap<String, String>) {
         // Varnish typically provides just the path, so we need a base URL for parsing
         let full_url = if url_str.starts_with("http://") || url_str.starts_with("https://") {
             url_str.to_string()
@@ -113,7 +113,7 @@ pub mod lambda_private {
         match Url::parse(&full_url) {
             Ok(url) => {
                 let path = url.path().to_string();
-                let mut query_params = BTreeMap::new();
+                let mut query_params = HashMap::new();
 
                 for (key, value) in url.query_pairs() {
                     query_params.insert(key.to_string(), value.to_string());
@@ -123,13 +123,13 @@ pub mod lambda_private {
             }
             Err(_) => {
                 // Fallback to just the path if parsing fails
-                (url_str.to_string(), BTreeMap::new())
+                (url_str.to_string(), HashMap::new())
             }
         }
     }
 
     /// Parse JSON response from Lambda
-    fn parse_json_response(payload: &[u8]) -> VclResult<(u16, BTreeMap<String, String>, Vec<u8>)> {
+    fn parse_json_response(payload: &[u8]) -> VclResult<(u16, HashMap<String, String>, Vec<u8>)> {
         let response: LambdaHttpResponse = serde_json::from_slice(payload)
             .map_err(|e| format!("Failed to parse Lambda JSON response: {}", e))?;
 
@@ -148,16 +148,16 @@ pub mod lambda_private {
     }
 
     /// Parse raw HTTP response from Lambda
-    /// 
+    ///
     /// The expected format of the payload (using \r\n as line endings):
     /// ```
     /// HTTP/1.1 200 OK
     /// Content-Type: application/json
     /// Content-Length: 12
-    /// 
+    ///
     /// {"message":"Hello, world!"}
     /// ```
-    fn parse_raw_http_response(payload: &[u8]) -> VclResult<(u16, BTreeMap<String, String>, Vec<u8>)> {
+    fn parse_raw_http_response(payload: &[u8]) -> VclResult<(u16, HashMap<String, String>, Vec<u8>)> {
         let response_str = std::str::from_utf8(payload)
             .map_err(|e| format!("Invalid UTF-8 in raw HTTP response: {}", e))?;
 
@@ -174,7 +174,7 @@ pub mod lambda_private {
             .ok_or_else(|| format!("Invalid HTTP status line: {}", status_line))?;
 
         // Parse headers
-        let mut headers = BTreeMap::new();
+        let mut headers = HashMap::new();
         let mut body_start = 0;
 
         for (idx, line) in lines.enumerate() {
@@ -532,7 +532,7 @@ pub mod lambda_private {
             let (path, query_string_parameters) = parse_url(&url);
 
             // Extract headers
-            let mut headers = BTreeMap::new();
+            let mut headers = HashMap::new();
             for (name, value) in bereq {
                 let value_str = String::from_utf8_lossy(value.as_ref()).into_owned();
                 headers.insert(name.to_lowercase(), value_str);
@@ -754,8 +754,8 @@ pub mod lambda_private {
                 let lambda_request = LambdaHttpRequest {
                     http_method: "GET".to_string(),
                     path: url.to_string(),
-                    query_string_parameters: BTreeMap::new(),
-                    headers: BTreeMap::new(),
+                    query_string_parameters: HashMap::new(),
+                    headers: HashMap::new(),
                     body: String::new(),
                     is_base64_encoded: false,
                 };

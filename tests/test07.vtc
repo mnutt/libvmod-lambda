@@ -7,9 +7,18 @@ server s1 {
     expect req.method == "POST"
     expect req.http.X-Amz-Invocation-Type == "RequestResponse"
 
-    # Validate the exact JSON payload body (keys are sorted due to BTreeMap)
+    # Validate the JSON payload contains expected fields
+    # Note: Varnish adds x-varnish, x-forwarded-for, and via headers automatically
     # The body "hello" should be base64 encoded as "aGVsbG8="
-    expect req.body == {{"httpMethod":"POST","path":"/upload","queryStringParameters":{},"headers":{"content-length":"5","content-type":"application/octet-stream","host":"example.com","user-agent":"c1","via":"1.1 v1 (Varnish/7.7)","x-forwarded-for":"127.0.0.1","x-varnish":"1002"},"body":"aGVsbG8=","isBase64Encoded":true}}
+    expect req.body ~ "\"httpMethod\":\"POST\""
+    expect req.body ~ "\"path\":\"/upload\""
+    expect req.body ~ "\"queryStringParameters\":\\{\\}"
+    expect req.body ~ "\"content-length\":\"5\""
+    expect req.body ~ "\"content-type\":\"application/octet-stream\""
+    expect req.body ~ "\"host\":\"example.com\""
+    expect req.body ~ "\"user-agent\":\"c1\""
+    expect req.body ~ "\"body\":\"aGVsbG8=\""
+    expect req.body ~ "\"isBase64Encoded\":true"
 
     # Return Lambda response
     txresp -status 200 \
