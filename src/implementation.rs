@@ -162,6 +162,67 @@ pub mod lambda_private {
     const MAX_CONCURRENT_INVOCATIONS: usize = 500_000;
     pub const DEFAULT_LAMBDA_TIMEOUT_SECS: u64 = 62;
 
+    /// Extract and encode the request body from Varnish context
+    ///
+    /// Returns a tuple of (body_string, is_base64_encoded):
+    /// - For text content types: returns the body as UTF-8 string, not base64 encoded
+    /// - For binary content types: returns base64-encoded body
+    /// - If no body is available: returns empty string, not base64 encoded
+    fn extract_request_body(ctx: &mut Ctx, content_type: &str) -> (String, bool) {
+        unsafe {
+            // Callback function to collect body chunks from Varnish
+            unsafe extern "C" fn body_collect_iterate(
+                priv_: *mut c_void,
+                _flush: c_uint,
+                ptr: *const c_void,
+                l: isize,
+            ) -> i32 {
+                // Nothing to do if no data
+                if ptr.is_null() || l == 0 {
+                    return 0;
+                }
+                unsafe {
+                    let body_vec = priv_.cast::<Vec<u8>>().as_mut().unwrap();
+                    let buf = std::slice::from_raw_parts(ptr.cast::<u8>(), l as usize);
+                    body_vec.extend_from_slice(buf);
+                }
+                0
+            }
+
+            let bo = ctx.raw.bo.as_mut().unwrap();
+            let mut body_bytes = Vec::new();
+            let p = (&raw mut body_bytes).cast::<c_void>();
+
+            // Try to iterate over the request body
+            // ObjIterate is used when bereq_body is available, otherwise VRB_Iterate
+            let result = if bo.bereq_body.is_null() {
+                if !bo.req.is_null() && (*bo.req).req_body_status != BS_NONE.as_ptr() {
+                    VRB_Iterate(
+                        bo.wrk,
+                        bo.vsl.as_mut_ptr(),
+                        bo.req,
+                        Some(body_collect_iterate),
+                        p,
+                    )
+                } else {
+                    -1  // No body available
+                }
+            } else {
+                ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_collect_iterate), 0) as isize
+            };
+
+            if result < 0 || body_bytes.is_empty() {
+                (String::new(), false)
+            } else if is_text_content_type(content_type) {
+                // Text content - use as-is
+                (String::from_utf8_lossy(&body_bytes).to_string(), false)
+            } else {
+                // Binary content - base64 encode
+                (BASE64.encode(&body_bytes), true)
+            }
+        }
+    }
+
     /// Background runtime for async Lambda invocations
     pub struct BgThread {
         pub rt: Runtime,
@@ -405,62 +466,8 @@ pub mod lambda_private {
                 .map(|s| s.as_str())
                 .unwrap_or("");
 
-            // Get request body
-            // In backend context, we need to access the cached body through ObjIterate or VRB_Iterate
-            let (body, is_base64_encoded) = unsafe {
-                // Callback function to collect body chunks
-                unsafe extern "C" fn body_collect_iterate(
-                    priv_: *mut c_void,
-                    _flush: c_uint,
-                    ptr: *const c_void,
-                    l: isize,
-                ) -> i32 {
-                    // nothing to do
-                    if ptr.is_null() || l == 0 {
-                        return 0;
-                    }
-                    unsafe {
-                        let body_vec = priv_.cast::<Vec<u8>>().as_mut().unwrap();
-                        let buf = std::slice::from_raw_parts(ptr.cast::<u8>(), l as usize);
-                        body_vec.extend_from_slice(buf);
-                    }
-                    0
-                }
-
-                let bo = ctx.raw.bo.as_mut().unwrap();
-                let mut body_bytes = Vec::new();
-                let p = (&raw mut body_bytes).cast::<c_void>();
-
-                // Check if there's a request body
-                // Try ObjIterate first (when bereq_body is available), otherwise VRB_Iterate
-                let result = if bo.bereq_body.is_null() {
-                    if !bo.req.is_null() && (*bo.req).req_body_status != BS_NONE.as_ptr() {
-                        VRB_Iterate(
-                            bo.wrk,
-                            bo.vsl.as_mut_ptr(),
-                            bo.req,
-                            Some(body_collect_iterate),
-                            p,
-                        )
-                    } else {
-                        -1  // No body available
-                    }
-                } else {
-                    ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_collect_iterate), 0) as isize
-                };
-
-                if result < 0 || body_bytes.is_empty() {
-                    (String::new(), false)
-                } else if is_text_content_type(content_type) {
-                    // Text content - use as-is
-                    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
-                    (body_str, false)
-                } else {
-                    // Binary content - base64 encode
-                    let encoded = BASE64.encode(&body_bytes);
-                    (encoded, true)
-                }
-            };
+            // Get and encode request body
+            let (body, is_base64_encoded) = extract_request_body(ctx, content_type);
 
             // Build Lambda HTTP request payload
             let lambda_request = LambdaHttpRequest {
