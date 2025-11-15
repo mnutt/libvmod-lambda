@@ -1,31 +1,14 @@
 vcl 4.1;
 
-import lambda;
-
 backend default none;
 
-# Note that you pay for these lambda invocations, so make health check
-# fast and adjust interval accordingly
-probe lambda_probe {
-    .url = "/ok";
-    .timeout = 3s;
-    .interval = 5s;
-    .window = 5;
-    .threshold = 3;
-}
+# Include backend setup (creates lambda backend with health probe)
+include "/etc/varnish/backend.vcl";
 
-sub vcl_init {
-    new my_lambda = lambda.backend(
-        function_name="my-lambda",
-        region="us-east-2",
-        probe=lambda_probe
-    );
-}
+# Include direct invocation logic for /test-endpoint
+include "/etc/varnish/direct-invoke.vcl";
 
 sub vcl_recv {
+    # For all other routes, pass through to backend
     return (pass);
-}
-
-sub vcl_backend_fetch {
-    set bereq.backend = my_lambda.backend();
 }
