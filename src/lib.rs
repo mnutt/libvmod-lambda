@@ -48,10 +48,9 @@ mod lambda {
             // This ensures the client is created in the same runtime context it will be used in
             let bg = vp_vcl.as_ref().expect("BgThread not initialized");
             let region_obj = Region::new(region.to_string());
-            let endpoint_for_client = endpoint_url_opt.clone();
             let client = bg.rt.block_on(async move {
                 // For testing with mock endpoints, we need to configure the SDK to allow HTTP
-                let sdk_config = if endpoint_for_client.is_some() {
+                let sdk_config = if endpoint_url_opt.is_some() {
                     // Mock/test configuration: use dummy credentials and allow HTTP
                     aws_config::defaults(aws_config::BehaviorVersion::latest())
                         .region(region_obj.clone())
@@ -69,7 +68,7 @@ mod lambda {
                 };
 
                 let mut lambda_config = LambdaConfigBuilder::from(&sdk_config);
-                if let Some(url) = endpoint_for_client {
+                if let Some(url) = endpoint_url_opt {
                     lambda_config = lambda_config.endpoint_url(url);
                 }
                 LambdaClient::from_conf(lambda_config.build())
