@@ -497,7 +497,7 @@ pub mod lambda_private {
                         name,
                         if health_update.health_unchanged { "Still" } else { "Went" },
                         if health_update.is_healthy { "healthy" } else { "sick" },
-                        "UNIMPLEMENTED",
+                        name,
                         good_probes(health_update.bitmap, spec.window),
                         spec.threshold,
                         spec.window,
