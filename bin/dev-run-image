@@ -2,6 +2,7 @@
 
 docker run --rm -it \
   -p 6081:6081 \
+  --ulimit memlock=134217728:134217728 \
   -v ./.aws-creds.env:/root/.aws-creds.env:ro \
   -v $(pwd)/example-vcl:/etc/varnish:ro \
   varnish-lambda bash -c 'source /root/.aws-creds.env && varnishd -F -f /etc/varnish/default.vcl -a :6081 -p vsl_mask=+VCL_trace $@'
