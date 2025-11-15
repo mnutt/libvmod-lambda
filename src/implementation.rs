@@ -306,6 +306,20 @@ pub mod lambda_private {
         pub raw_response_mode: bool,
     }
 
+    impl VCLBackend {
+        /// Get a reference to the background thread
+        ///
+        /// # Safety
+        /// This is safe because:
+        /// - The BgThread is created during VCL load and lives until VCL discard
+        /// - The VCLBackend is only accessed during request processing, which happens
+        ///   within the VCL lifetime
+        /// - The pointer is guaranteed to remain valid for the lifetime of the VCL
+        fn bgt(&self) -> &BgThread {
+            unsafe { &*self.bgt }
+        }
+    }
+
     /// Backend response implementation
     pub struct BackendResp {
         pub payload: Option<Bytes>,
@@ -535,7 +549,7 @@ pub mod lambda_private {
                 timeout_secs: self.timeout_secs,
             };
 
-            let result = unsafe { (*self.bgt).invoke_sync(req) };
+            let result = self.bgt().invoke_sync(req);
 
             match result {
                 Err(e) => Err(e.into()),
@@ -592,10 +606,12 @@ pub mod lambda_private {
                 return;
             };
 
-            let _guard = unsafe { (*self.bgt).rt.enter() };
+            let _guard = self.bgt().rt.enter();
             match event {
                 Event::Warm => {
                     spawn_probe(
+                        // SAFETY: BgThread lives for the entire VCL lifetime, and spawn_probe
+                        // needs a 'static reference to spawn a background task
                         unsafe { &*self.bgt },
                         std::ptr::from_ref::<ProbeState>(probe_state).cast_mut(),
                         self.function_name.clone(),
