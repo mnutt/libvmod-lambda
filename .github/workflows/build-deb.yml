@@ -24,6 +24,11 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ matrix.os }}-${{ matrix.varnish }}
+
     - name: Install Varnish from packagecloud
       run: |
         curl -s https://packagecloud.io/install/repositories/varnishcache/${{ matrix.varnish }}/script.deb.sh | sudo bash
