@@ -565,85 +565,62 @@ pub mod lambda_private {
         }
 
         fn list(&self, ctx: &mut Ctx<'_>, vsb: &mut Buffer<'_>, detailed: bool, json: bool) {
-            if self.probe_state.is_none() {
-                let state = if self.healthy(ctx).0 {
-                    "healthy"
-                } else {
-                    "sick"
+            // Handle backends without probe configuration
+            let Some(probe_state) = self.probe_state.as_ref() else {
+                let state = if self.healthy(ctx).0 { "healthy" } else { "sick" };
+                let msg = match (json, detailed) {
+                    (true, true) => format!("[0, 0, \"{}\"],", state),
+                    (true, false) => "[]".to_string(),
+                    (false, true) => format!("0/0\t{}", state),
+                    (false, false) => String::new(),
                 };
-                if json {
-                    if detailed {
-                        vsb.write(&"[0, 0, \"").unwrap();
-                        vsb.write(&state).unwrap();
-                        vsb.write(&"\"],").unwrap();
-                    } else {
-                        vsb.write(&"[]").unwrap();
-                    }
-                } else if detailed {
-                    vsb.write(&"0/0\t").unwrap();
-                    vsb.write(&state).unwrap();
-                }
+                let _ = vsb.write(&msg);
                 return;
-            }
+            };
 
+            // Extract probe state information
             let ProbeState {
                 history,
                 avg,
-                spec: Probe {
-                    window, threshold, ..
-                },
+                spec: Probe { window, threshold, .. },
                 ..
-            } = self.probe_state.as_ref().unwrap();
+            } = probe_state;
             let bitmap = history.load(Ordering::Relaxed);
             let window = *window;
             let threshold = *threshold;
-            let health_str = if is_healthy(bitmap, window, threshold) {
-                "healthy"
-            } else {
-                "sick"
-            };
+            let good_count = good_probes(bitmap, window);
+            let health_str = if is_healthy(bitmap, window, threshold) { "healthy" } else { "sick" };
+
+            // Format output based on json/detailed flags
             let msg = match (json, detailed) {
                 (true, false) => {
-                    format!(
-                        "[{}, {}, \"{}\"]",
-                        good_probes(bitmap, window),
-                        window,
-                        health_str,
-                    )
+                    format!("[{}, {}, \"{}\"]", good_count, window, health_str)
                 }
                 (true, true) => {
-                    serde_json::to_string(&self.probe_state.as_ref().unwrap().spec)
-                        .as_ref()
-                        .unwrap()
-                        .to_owned()
-                        + ",\n"
+                    format!("{},\n", serde_json::to_string(&probe_state.spec).unwrap())
                 }
                 (false, false) => {
-                    format!("{}/{}\t{}", good_probes(bitmap, window), window, health_str)
+                    format!("{}/{}\t{}", good_count, window, health_str)
                 }
                 (false, true) => {
-                    let mut s = format!(
+                    let bitmap_viz: String = (0..64)
+                        .map(|i| if bitmap.wrapping_shr(63 - i) & 1 == 1 { "H" } else { "-" })
+                        .collect();
+                    format!(
                         "
  Current states  good: {:2} threshold: {:2} window: {:2}
   Average response time of good probes: {:.06}
   Oldest ================================================== Newest
-  ",
-                        good_probes(bitmap, window),
+  {}",
+                        good_count,
                         threshold,
                         window,
-                        avg.lock().unwrap()
-                    );
-                    for i in 0..64 {
-                        s += if bitmap.wrapping_shr(63 - i) & 1 == 1 {
-                            "H"
-                        } else {
-                            "-"
-                        };
-                    }
-                    s
+                        *avg.lock().unwrap(),
+                        bitmap_viz
+                    )
                 }
             };
-            vsb.write(&msg).unwrap();
+            let _ = vsb.write(&msg);
         }
     }
 
