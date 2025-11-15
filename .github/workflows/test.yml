@@ -30,8 +30,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y varnish varnish-dev
 
-    - name: Build VMOD
-      run: cargo build --release
-
     - name: Run tests
-      run: cargo test
+      run: |
+        cargo build
+        LD_LIBRARY_PATH=$PWD/target/debug:$LD_LIBRARY_PATH cargo test
