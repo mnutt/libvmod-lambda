@@ -377,17 +377,31 @@ pub mod lambda_private {
         good_probes(bitmap, window) >= threshold
     }
 
+    /// Result of updating health probe history
+    struct HealthUpdate {
+        /// Updated bitmap with new probe result
+        bitmap: u64,
+        /// Current health status (true = healthy)
+        is_healthy: bool,
+        /// Whether health status remained unchanged
+        health_unchanged: bool,
+    }
+
     fn update_health(
         mut bitmap: u64,
         threshold: u32,
         window: u32,
         probe_ok: bool,
-    ) -> (u64, bool, bool) {
+    ) -> HealthUpdate {
         let old_health = is_healthy(bitmap, window, threshold);
         let new_bit = u64::from(probe_ok);
         bitmap = bitmap.wrapping_shl(1) | new_bit;
         let new_health = is_healthy(bitmap, window, threshold);
-        (bitmap, new_health, new_health == old_health)
+        HealthUpdate {
+            bitmap,
+            is_healthy: new_health,
+            health_unchanged: new_health == old_health,
+        }
     }
 
     fn spawn_probe(bgt: &'static BgThread, probe_state: *mut ProbeState, name: String, client: LambdaClient) {
@@ -443,17 +457,16 @@ pub mod lambda_private {
                 };
 
                 let bitmap = history.load(Ordering::Relaxed);
-                let (bitmap, healthy, changed) =
-                    update_health(bitmap, spec.threshold, spec.window, new_bit);
+                let health_update = update_health(bitmap, spec.threshold, spec.window, new_bit);
                 log(
                     LogTag::BackendHealth,
                     format!(
                         "{} {} {} {} {} {} {} {} {} {}",
                         name,
-                        if changed { "Went" } else { "Still" },
-                        if healthy { "healthy" } else { "sick" },
+                        if health_update.health_unchanged { "Still" } else { "Went" },
+                        if health_update.is_healthy { "healthy" } else { "sick" },
                         "UNIMPLEMENTED",
-                        good_probes(bitmap, spec.window),
+                        good_probes(health_update.bitmap, spec.window),
                         spec.threshold,
                         spec.window,
                         time,
@@ -461,7 +474,7 @@ pub mod lambda_private {
                         msg
                     ),
                 );
-                history.store(bitmap, Ordering::Relaxed);
+                history.store(health_update.bitmap, Ordering::Relaxed);
                 tokio::time::sleep(spec.interval).await;
             }
         }));
@@ -477,19 +490,19 @@ pub mod lambda_private {
 
             // Extract HTTP method
             let http_method = bereq.method()
-                .map(|m| String::from_utf8_lossy(m.as_ref()).to_string())
-                .unwrap_or_else(|| "GET".to_string());
+                .map(|m| String::from_utf8_lossy(m.as_ref()).into_owned())
+                .unwrap_or_else(|| "GET".into());
 
             // Extract URL and parse path/query
             let url = bereq.url()
-                .map(|u| String::from_utf8_lossy(u.as_ref()).to_string())
-                .unwrap_or_else(|| "/".to_string());
+                .map(|m| String::from_utf8_lossy(m.as_ref()).into_owned())
+                .unwrap_or_else(|| "/".into());
             let (path, query_string_parameters) = parse_url(&url);
 
             // Extract headers
             let mut headers = BTreeMap::new();
             for (name, value) in bereq {
-                let value_str = String::from_utf8_lossy(value.as_ref()).to_string();
+                let value_str = String::from_utf8_lossy(value.as_ref()).into_owned();
                 headers.insert(name.to_lowercase(), value_str);
             }
 
