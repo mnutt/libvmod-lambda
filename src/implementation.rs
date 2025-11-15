@@ -4,7 +4,10 @@ pub mod lambda_private {
     use tokio::sync::Semaphore;
     use tokio::time::Duration as TokioDuration;
     use aws_sdk_lambda::Client as LambdaClient;
+    use aws_sdk_lambda::config::Builder as LambdaConfigBuilder;
     use aws_sdk_lambda::types::InvocationType;
+    use aws_credential_types::Credentials;
+    use aws_types::region::Region;
     use bytes::Bytes;
     use std::error::Error;
     use std::sync::Arc;
@@ -21,6 +24,35 @@ pub mod lambda_private {
 
     use varnish::vcl::{Backend, Buffer, Ctx, Event, LogTag, Probe, VclBackend, VclError, VclResponse, VclResult, log};
     use varnish::ffi::{BS_NONE, VRB_Iterate, ObjIterate};
+
+    /// Build a Lambda client with the specified configuration
+    ///
+    /// For mock/test endpoints, uses dummy credentials.
+    /// For production, uses credentials from the environment.
+    pub async fn build_lambda_client(region: Region, endpoint_url: Option<String>) -> LambdaClient {
+        let sdk_config = if endpoint_url.is_some() {
+            // Mock/test configuration: use dummy credentials and allow HTTP
+            aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .region(region.clone())
+                .credentials_provider(Credentials::new(
+                    "test", "test", None, None, "test"
+                ))
+                .load()
+                .await
+        } else {
+            // Production configuration: use real credentials from environment
+            aws_config::from_env()
+                .region(region.clone())
+                .load()
+                .await
+        };
+
+        let mut lambda_config = LambdaConfigBuilder::from(&sdk_config);
+        if let Some(url) = endpoint_url {
+            lambda_config = lambda_config.endpoint_url(url);
+        }
+        LambdaClient::from_conf(lambda_config.build())
+    }
 
     /// Lambda HTTP request payload
     #[derive(Debug, Serialize, Deserialize)]

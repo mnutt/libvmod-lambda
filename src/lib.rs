@@ -8,16 +8,13 @@ mod lambda {
     use std::error::Error;
     use std::time::Duration;
 
-    use aws_credential_types::Credentials;
-    use aws_sdk_lambda::config::Builder as LambdaConfigBuilder;
-    use aws_sdk_lambda::Client as LambdaClient;
     use aws_types::region::Region;
     use varnish::ffi::VCL_BACKEND;
     use varnish::vcl::{Backend, Ctx, Event, Probe, VclError};
 
     use crate::implementation::lambda_private::{
         build_probe_state, backend, BgThread, InvokeRequest, VCLBackend,
-        DEFAULT_LAMBDA_TIMEOUT_SECS,
+        DEFAULT_LAMBDA_TIMEOUT_SECS, build_lambda_client,
     };
 
     impl backend {
@@ -41,38 +38,12 @@ mod lambda {
             #[default(false)]
             raw_response_mode: bool,
         ) -> Result<Self, VclError> {
-            // Create the Lambda client with the specified region and optional endpoint
-            let endpoint_url_opt = endpoint_url.map(String::from);
-
             // Use the BgThread's runtime to initialize the AWS client
             // This ensures the client is created in the same runtime context it will be used in
             let bg = vp_vcl.as_ref().expect("BgThread not initialized");
             let region_obj = Region::new(region.to_string());
-            let client = bg.rt.block_on(async move {
-                // For testing with mock endpoints, we need to configure the SDK to allow HTTP
-                let sdk_config = if endpoint_url_opt.is_some() {
-                    // Mock/test configuration: use dummy credentials and allow HTTP
-                    aws_config::defaults(aws_config::BehaviorVersion::latest())
-                        .region(region_obj.clone())
-                        .credentials_provider(Credentials::new(
-                            "test", "test", None, None, "test"
-                        ))
-                        .load()
-                        .await
-                } else {
-                    // Production configuration: use real credentials from environment
-                    aws_config::from_env()
-                        .region(region_obj.clone())
-                        .load()
-                        .await
-                };
-
-                let mut lambda_config = LambdaConfigBuilder::from(&sdk_config);
-                if let Some(url) = endpoint_url_opt {
-                    lambda_config = lambda_config.endpoint_url(url);
-                }
-                LambdaClient::from_conf(lambda_config.build())
-            });
+            let endpoint_url_opt = endpoint_url.map(String::from);
+            let client = bg.rt.block_on(build_lambda_client(region_obj, endpoint_url_opt));
 
             let timeout_secs = timeout
                 .map(|d| d.as_secs())
@@ -153,7 +124,7 @@ mod lambda {
                 .config()
                 .region()
                 .map(|r| r.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
+                .unwrap_or_else(|| "unknown".into())
         }
 
         /// Return a VCL backend built upon the Lambda backend specification
