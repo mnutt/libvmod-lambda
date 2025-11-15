@@ -14,6 +14,9 @@ jobs:
         os:
           - ubuntu-22.04
           - ubuntu-24.04
+        varnish:
+          - varnish77
+          - varnish80
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
@@ -21,19 +24,36 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Install Varnish
+    - name: Install Varnish from packagecloud
       run: |
+        curl -s https://packagecloud.io/install/repositories/varnishcache/${{ matrix.varnish }}/script.deb.sh | sudo bash
         sudo apt-get update
-        sudo apt-get install -y varnish libvarnishapi-dev
+        sudo apt-get install -y varnish varnish-dev
 
     - name: Install cargo-deb
       run: cargo install cargo-deb
 
+    - name: Set Varnish version dependency
+      run: |
+        if [ "${{ matrix.varnish }}" = "varnish77" ]; then
+          echo "VARNISH_DEB_DEPENDS=varnish (>= 7.7.0)" >> $GITHUB_ENV
+        elif [ "${{ matrix.varnish }}" = "varnish80" ]; then
+          echo "VARNISH_DEB_DEPENDS=varnish (>= 8.0.0)" >> $GITHUB_ENV
+        else
+          echo "Error: Unknown varnish version ${{ matrix.varnish }}"
+          exit 1
+        fi
+
     - name: Build Debian package
-      run: cargo deb
+      run: |
+        if [ -z "$VARNISH_DEB_DEPENDS" ]; then
+          echo "Error: VARNISH_DEB_DEPENDS not set"
+          exit 1
+        fi
+        cargo deb
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: vmod-lambda-${{ matrix.os }}.deb
+        name: vmod-lambda-${{ matrix.os }}-${{ matrix.varnish }}.deb
         path: target/debian/*.deb

@@ -26,7 +26,7 @@ cdylib-plugin = "0.1"
 
 [package.metadata.deb]
 maintainer = "Michael Nutt <michael@nuttnet.net>"
-depends = "varnish (>= 7.7.0)"
+depends = "$VARNISH_DEB_DEPENDS"
 section = "web"
 priority = "optional"
 assets = [
