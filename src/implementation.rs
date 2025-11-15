@@ -374,7 +374,7 @@ pub mod lambda_private {
         }));
     }
 
-    impl<'a> VclBackend<BackendResp> for VCLBackend {
+    impl VclBackend<BackendResp> for VCLBackend {
         fn get_response(&self, ctx: &mut Ctx<'_>) -> VclResult<Option<BackendResp>> {
             if !self.healthy(ctx).0 {
                 return Err("unhealthy".into());
@@ -421,7 +421,6 @@ pub mod lambda_private {
                     }
                     unsafe {
                         let body_vec = priv_.cast::<Vec<u8>>().as_mut().unwrap();
-                        #[expect(clippy::cast_sign_loss)]
                         let buf = std::slice::from_raw_parts(ptr.cast::<u8>(), l as usize);
                         body_vec.extend_from_slice(buf);
                     }

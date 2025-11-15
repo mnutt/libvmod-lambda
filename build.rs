@@ -1,4 +1,3 @@
-use cdylib_plugin;
 use std::{env, fs};
 
 fn main() {
