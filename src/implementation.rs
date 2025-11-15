@@ -148,6 +148,15 @@ pub mod lambda_private {
     }
 
     /// Parse raw HTTP response from Lambda
+    /// 
+    /// The expected format of the payload (using \r\n as line endings):
+    /// ```
+    /// HTTP/1.1 200 OK
+    /// Content-Type: application/json
+    /// Content-Length: 12
+    /// 
+    /// {"message":"Hello, world!"}
+    /// ```
     fn parse_raw_http_response(payload: &[u8]) -> VclResult<(u16, BTreeMap<String, String>, Vec<u8>)> {
         let response_str = std::str::from_utf8(payload)
             .map_err(|e| format!("Invalid UTF-8 in raw HTTP response: {}", e))?;
@@ -209,33 +218,34 @@ pub mod lambda_private {
     /// - For binary content types: returns base64-encoded body
     /// - If no body is available: returns empty string, not base64 encoded
     fn extract_request_body(ctx: &mut Ctx, content_type: &str) -> (String, bool) {
-        unsafe {
-            // Callback function to collect body chunks from Varnish
-            unsafe extern "C" fn body_collect_iterate(
-                priv_: *mut c_void,
-                _flush: c_uint,
-                ptr: *const c_void,
-                l: isize,
-            ) -> i32 {
-                // Nothing to do if no data
-                if ptr.is_null() || l == 0 {
-                    return 0;
-                }
-                unsafe {
-                    let body_vec = priv_.cast::<Vec<u8>>().as_mut().unwrap();
-                    let buf = std::slice::from_raw_parts(ptr.cast::<u8>(), l as usize);
-                    body_vec.extend_from_slice(buf);
-                }
-                0
+        // Callback function to collect body chunks from Varnish
+        unsafe extern "C" fn body_collect_iterate(
+            priv_: *mut c_void,
+            _flush: c_uint,
+            ptr: *const c_void,
+            l: isize,
+        ) -> i32 {
+            // Nothing to do if no data
+            if ptr.is_null() || l == 0 {
+                return 0;
             }
+            unsafe {
+                let body_vec = priv_.cast::<Vec<u8>>().as_mut().unwrap();
+                let buf = std::slice::from_raw_parts(ptr.cast::<u8>(), l as usize);
+                body_vec.extend_from_slice(buf);
+            }
+            0
+        }
 
+        let mut body_bytes = Vec::new();
+
+        let result = unsafe {
             let bo = ctx.raw.bo.as_mut().unwrap();
-            let mut body_bytes = Vec::new();
             let p = (&raw mut body_bytes).cast::<c_void>();
 
             // Try to iterate over the request body
             // ObjIterate is used when bereq_body is available, otherwise VRB_Iterate
-            let result = if bo.bereq_body.is_null() {
+            if bo.bereq_body.is_null() {
                 if !bo.req.is_null() && (*bo.req).req_body_status != BS_NONE.as_ptr() {
                     VRB_Iterate(
                         bo.wrk,
@@ -249,17 +259,17 @@ pub mod lambda_private {
                 }
             } else {
                 ObjIterate(bo.wrk, bo.bereq_body, p, Some(body_collect_iterate), 0) as isize
-            };
-
-            if result < 0 || body_bytes.is_empty() {
-                (String::new(), false)
-            } else if is_text_content_type(content_type) {
-                // Text content - use as-is
-                (String::from_utf8_lossy(&body_bytes).to_string(), false)
-            } else {
-                // Binary content - base64 encode
-                (BASE64.encode(&body_bytes), true)
             }
+        };
+
+        if result < 0 || body_bytes.is_empty() {
+            (String::new(), false)
+        } else if is_text_content_type(content_type) {
+            // Text content - use as-is
+            (String::from_utf8_lossy(&body_bytes).to_string(), false)
+        } else {
+            // Binary content - base64 encode
+            (BASE64.encode(&body_bytes), true)
         }
     }
 
