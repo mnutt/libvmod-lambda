@@ -2,7 +2,7 @@ FROM ubuntu:22.04
 
 # Set environment variables to avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
-ENV VARNISH_VERSION=6.0.13
+ENV VARNISH_VERSION=8.0.0
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
     python3-sphinx \
     libedit-dev \
     libncurses-dev \
-    libpcre3-dev \
+    libpcre2-dev \
     libjemalloc-dev \
     automake \
     autotools-dev \
