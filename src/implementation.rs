@@ -98,14 +98,10 @@ pub mod lambda_private {
             || ct_lower.starts_with("application/x-www-form-urlencoded")
     }
 
-    /// Parse URL into path and query string parameters
-    fn parse_url(url_str: &str) -> (String, HashMap<String, String>) {
-        // Varnish typically provides just the path, so we need a base URL for parsing
-        let full_url = if url_str.starts_with("http://") || url_str.starts_with("https://") {
-            url_str.to_string()
-        } else {
-            format!("http://dummy{}", url_str)
-        };
+    /// Parse path into path and query string parameters
+    fn parse_path(path_str: &str) -> (String, HashMap<String, String>) {
+        // Varnish provides just the path, so we need a base URL for parsing
+        let full_url = format!("http://dummy{}", path_str);
 
         match Url::parse(&full_url) {
             Ok(url) => {
@@ -120,7 +116,7 @@ pub mod lambda_private {
             }
             Err(_) => {
                 // Fallback to just the path if parsing fails
-                (url_str.to_string(), HashMap::new())
+                (path_str.to_string(), HashMap::new())
             }
         }
     }
@@ -526,7 +522,7 @@ pub mod lambda_private {
             let url = bereq.url()
                 .map(|m| String::from_utf8_lossy(m.as_ref()).into_owned())
                 .unwrap_or_else(|| "/".into());
-            let (path, query_string_parameters) = parse_url(&url);
+            let (path, query_string_parameters) = parse_path(&url);
 
             // Extract headers
             let mut headers = HashMap::new();
