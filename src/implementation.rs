@@ -635,7 +635,8 @@ pub mod lambda_private {
             }
 
             let to_write = &payload[self.cursor..];
-            let n = buf.write(to_write).unwrap();
+            let n = buf.write(to_write)
+                .map_err(|e| format!("Failed to write response body: {}", e))?;
             self.cursor += n;
             Ok(n)
         }
