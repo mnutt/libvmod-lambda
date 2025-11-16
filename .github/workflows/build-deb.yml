@@ -35,26 +35,8 @@ jobs:
     - name: Install cargo-deb
       run: cargo install cargo-deb
 
-    - name: Set Varnish version dependency
-      run: |
-        if [ "${{ matrix.varnish }}" = "varnish77" ]; then
-          echo "VARNISH_DEB_DEPENDS=varnish (>= 7.7.0), varnish (<< 8.0.0)" >> $GITHUB_ENV
-          echo "VARNISH_PACKAGE_NAME=vmod-lambda-varnish77" >> $GITHUB_ENV
-        elif [ "${{ matrix.varnish }}" = "varnish80" ]; then
-          echo "VARNISH_DEB_DEPENDS=varnish (>= 8.0.0), varnish (<< 8.1.0)" >> $GITHUB_ENV
-          echo "VARNISH_PACKAGE_NAME=vmod-lambda-varnish80" >> $GITHUB_ENV
-        else
-          echo "Error: Unknown varnish version ${{ matrix.varnish }}"
-          exit 1
-        fi
-
     - name: Build Debian package
-      run: |
-        if [ -z "$VARNISH_DEB_DEPENDS" ]; then
-          echo "Error: VARNISH_DEB_DEPENDS not set"
-          exit 1
-        fi
-        cargo deb
+      run: cargo deb --variant=${{ matrix.varnish }}
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4

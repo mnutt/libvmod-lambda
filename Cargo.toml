@@ -25,9 +25,8 @@ base64 = "0.22"
 cdylib-plugin = "0.1"
 
 [package.metadata.deb]
-name = "$VARNISH_PACKAGE_NAME"
+name = "vmod-lambda"
 maintainer = "Michael Nutt <michael@nuttnet.net>"
-depends = "$VARNISH_DEB_DEPENDS"
 provides = "vmod-lambda"
 conflicts = "vmod-lambda"
 section = "web"
@@ -40,3 +39,11 @@ A Varnish VMOD for invoking AWS Lambda functions from VCL.
 This VMOD allows Varnish to invoke AWS Lambda functions with high throughput
 and thousands of concurrent invocations.
 """
+
+[package.metadata.deb.variants.varnish77]
+name = "vmod-lambda-varnish77"
+depends = "varnish (>= 7.7.0), varnish (<< 8.0.0)"
+
+[package.metadata.deb.variants.varnish80]
+name = "vmod-lambda-varnish80"
+depends = "varnish (>= 8.0.0), varnish (<< 8.1.0)"
