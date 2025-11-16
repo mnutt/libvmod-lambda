@@ -1,5 +1,6 @@
 [package]
 name = "vmod_lambda"
+description = "A Varnish VMOD for invoking AWS Lambda functions from VCL"
 version = "0.1.0"
 edition = "2024"
 
@@ -34,7 +35,6 @@ priority = "optional"
 assets = [
     ["target/release/libvmod_lambda.so", "usr/lib/varnish/vmods/", "644"],
 ]
-description = "A Varnish VMOD for invoking AWS Lambda functions from VCL"
 extended-description = """
 A Varnish VMOD for invoking AWS Lambda functions from VCL.
 This VMOD allows Varnish to invoke AWS Lambda functions with high throughput
