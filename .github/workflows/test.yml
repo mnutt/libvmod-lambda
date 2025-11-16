@@ -21,6 +21,8 @@ jobs:
 
     - name: Cache Rust dependencies
       uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: ${{ matrix.varnish }}
 
     - name: Install Varnish from packagecloud
       run: |
