@@ -1,3 +1,3 @@
 #!/bin/bash
 
-docker exec -it $(docker ps -q --filter ancestor=varnish-lambda) varnishlog -g raw -i BackendHealth
+docker exec -it $(docker ps -q --filter ancestor=varnish-lambda) varnishlog -g raw -i Backend_health
