@@ -58,6 +58,13 @@ mod lambda {
 
             let has_probe = probe_state.is_some();
 
+            // Create VSC statistics for this backend
+            // Format: lambda.{vcl_name}.{metric_name}
+            let stats = varnish::Vsc::new(
+                "lambda",
+                vcl_name,
+            );
+
             let be = Backend::new(
                 ctx,
                 "lambda",
@@ -70,6 +77,7 @@ mod lambda {
                     timeout_secs,
                     probe_state,
                     raw_response_mode,
+                    stats,
                 },
                 has_probe,
             )?;

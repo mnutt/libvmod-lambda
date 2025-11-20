@@ -39,6 +39,7 @@ RUN wget https://varnish-cache.org/_downloads/varnish-${VARNISH_VERSION}.tgz && 
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CARGO_HOME=/usr/local/cargo
 
 # Create directory for vmod
 WORKDIR /app

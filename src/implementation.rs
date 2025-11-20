@@ -24,6 +24,60 @@ pub mod lambda_private {
 
     use varnish::vcl::{Backend, Buffer, Ctx, Event, LogTag, Probe, VclBackend, VclError, VclResponse, VclResult, log};
     use varnish::ffi::{BS_NONE, VRB_Iterate, ObjIterate};
+    use varnish::{Vsc, VscMetric};
+
+    /// Varnish statistics counters for Lambda backend
+    #[derive(VscMetric)]
+    #[repr(C)]
+    pub struct LambdaBackendStats {
+        /// Backend requests
+        #[counter]
+        pub req: AtomicU64,
+
+        /// Request header bytes sent
+        #[counter(format = "bytes")]
+        pub bereq_hdrbytes: AtomicU64,
+
+        /// Request body bytes sent
+        #[counter(format = "bytes")]
+        pub bereq_bodybytes: AtomicU64,
+
+        /// Response header bytes received
+        #[counter(format = "bytes")]
+        pub beresp_hdrbytes: AtomicU64,
+
+        /// Response body bytes received
+        #[counter(format = "bytes")]
+        pub beresp_bodybytes: AtomicU64,
+
+        /// Failed requests
+        #[counter]
+        pub fail: AtomicU64,
+
+        /// Lambda function errors (non-2xx status or FunctionError)
+        #[counter]
+        pub function_error: AtomicU64,
+
+        /// Timeout errors
+        #[counter]
+        pub timeout: AtomicU64,
+
+        /// Throttled requests (TooManyRequestsException)
+        #[counter]
+        pub throttled: AtomicU64,
+
+        /// In-flight Lambda invocations
+        #[gauge]
+        pub inflight: AtomicU64,
+
+        /// Cumulative Lambda invocation time in milliseconds
+        #[counter(format = "duration")]
+        pub invoke_time_ms: AtomicU64,
+
+        /// Health probe bitmap (last 64 results)
+        #[gauge]
+        pub happy: AtomicU64,
+    }
 
     /// Build a Lambda client with the specified configuration
     pub async fn build_lambda_client(region: Region, endpoint_url: Option<String>) -> LambdaClient {
@@ -315,6 +369,7 @@ pub mod lambda_private {
         pub timeout_secs: u64,
         pub probe_state: Option<ProbeState>,
         pub raw_response_mode: bool,
+        pub stats: Vsc<LambdaBackendStats>,
     }
 
     impl VCLBackend {
@@ -395,7 +450,13 @@ pub mod lambda_private {
     }
 
     fn good_probes(bitmap: u64, window: u32) -> u32 {
-        bitmap.wrapping_shl(64_u32 - window).count_ones()
+        // Mask the rightmost 'window' bits and count the 1s
+        let mask = if window >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << window) - 1
+        };
+        (bitmap & mask).count_ones()
     }
 
     fn is_healthy(bitmap: u64, window: u32, threshold: u32) -> bool {
@@ -507,7 +568,11 @@ pub mod lambda_private {
 
     impl VclBackend<BackendResp> for VCLBackend {
         fn get_response(&self, ctx: &mut Ctx<'_>) -> VclResult<Option<BackendResp>> {
+            // Increment request counter
+            self.stats.req.fetch_add(1, Ordering::Relaxed);
+
             if !self.healthy(ctx).0 {
+                self.stats.fail.fetch_add(1, Ordering::Relaxed);
                 return Err("unhealthy".into());
             }
 
@@ -526,8 +591,11 @@ pub mod lambda_private {
 
             // Extract headers
             let mut headers = HashMap::new();
+            let mut header_bytes = 0u64;
             for (name, value) in bereq {
                 let value_str = String::from_utf8_lossy(value.as_ref()).into_owned();
+                // Count header bytes: "name: value\r\n"
+                header_bytes += name.len() as u64 + 2 + value_str.len() as u64 + 2;
                 headers.insert(name.to_lowercase(), value_str);
             }
 
@@ -538,6 +606,7 @@ pub mod lambda_private {
 
             // Get and encode request body
             let (body, is_base64_encoded) = extract_request_body(ctx, content_type);
+            let body_bytes = body.len() as u64;
 
             // Build Lambda HTTP request payload
             let lambda_request = LambdaHttpRequest {
@@ -551,7 +620,14 @@ pub mod lambda_private {
 
             // Serialize to JSON
             let payload = serde_json::to_vec(&lambda_request)
-                .map_err(|e| format!("Failed to serialize request: {}", e))?;
+                .map_err(|e| {
+                    self.stats.fail.fetch_add(1, Ordering::Relaxed);
+                    format!("Failed to serialize request: {}", e)
+                })?;
+
+            // Update request byte counters
+            self.stats.bereq_hdrbytes.fetch_add(header_bytes, Ordering::Relaxed);
+            self.stats.bereq_bodybytes.fetch_add(body_bytes, Ordering::Relaxed);
 
             let req = InvokeRequest {
                 function_name: self.function_name.clone(),
@@ -560,16 +636,35 @@ pub mod lambda_private {
                 timeout_secs: self.timeout_secs,
             };
 
+            // Track in-flight invocations and measure latency
+            self.stats.inflight.fetch_add(1, Ordering::Relaxed);
+            let start = Instant::now();
             let result = self.bgt().invoke_sync(req);
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            self.stats.inflight.fetch_sub(1, Ordering::Relaxed);
+            self.stats.invoke_time_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
 
             match result {
-                Err(e) => Err(e.into()),
+                Err(e) => {
+                    // Check error type
+                    let err_str = e.to_string();
+                    if err_str.contains("timeout") || err_str.contains("timed out") {
+                        self.stats.timeout.fetch_add(1, Ordering::Relaxed);
+                    } else if err_str.contains("TooManyRequestsException") || err_str.contains("ThrottlingException") {
+                        self.stats.throttled.fetch_add(1, Ordering::Relaxed);
+                    }
+                    self.stats.fail.fetch_add(1, Ordering::Relaxed);
+                    Err(e.into())
+                }
                 Ok(resp) => {
                     if let Some(err) = resp.function_error {
+                        self.stats.function_error.fetch_add(1, Ordering::Relaxed);
+                        self.stats.fail.fetch_add(1, Ordering::Relaxed);
                         return Err(format!("Lambda error: {err}").into());
                     }
 
                     let Some(payload) = resp.payload else {
+                        self.stats.fail.fetch_add(1, Ordering::Relaxed);
                         return Err("Empty Lambda response".into());
                     };
 
@@ -579,6 +674,19 @@ pub mod lambda_private {
                     } else {
                         parse_json_response(&payload)?
                     };
+
+                    // Track function errors based on status code
+                    if !(200..300).contains(&status_code) {
+                        self.stats.function_error.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    // Calculate response header bytes
+                    let mut resp_header_bytes = 0u64;
+                    for (name, value) in &headers {
+                        resp_header_bytes += name.len() as u64 + 2 + value.len() as u64 + 2;
+                    }
+                    self.stats.beresp_hdrbytes.fetch_add(resp_header_bytes, Ordering::Relaxed);
+                    self.stats.beresp_bodybytes.fetch_add(body_bytes.len() as u64, Ordering::Relaxed);
 
                     // Set response status and headers
                     let beresp = ctx.http_beresp.as_mut().unwrap();
@@ -600,12 +708,17 @@ pub mod lambda_private {
 
         fn healthy(&self, _ctx: &mut Ctx<'_>) -> (bool, SystemTime) {
             let Some(ref probe_state) = self.probe_state else {
+                // No probe: always healthy, update gauge
+                self.stats.happy.store(u64::MAX, Ordering::Relaxed);
                 return (true, SystemTime::UNIX_EPOCH);
             };
 
             assert!(probe_state.spec.window <= 64);
 
             let bitmap = probe_state.history.load(Ordering::Relaxed);
+            // Update the happy gauge with the current probe bitmap
+            self.stats.happy.store(bitmap, Ordering::Relaxed);
+
             (
                 is_healthy(bitmap, probe_state.spec.window, probe_state.spec.threshold),
                 probe_state.health_changed,
