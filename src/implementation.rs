@@ -5,6 +5,7 @@ pub mod lambda_private {
     use tokio::time::Duration as TokioDuration;
     use aws_sdk_lambda::Client as LambdaClient;
     use aws_sdk_lambda::config::Builder as LambdaConfigBuilder;
+    use aws_sdk_lambda::error::ProvideErrorMetadata;
     use aws_sdk_lambda::types::InvocationType;
     use aws_credential_types::Credentials;
     use aws_types::region::Region;
@@ -439,8 +440,15 @@ pub mod lambda_private {
             invoke_future
         )
         .await
-        .map_err(|_| format!("Lambda invocation timed out after {}s", timeout_secs))?
-        .map_err(|e| format!("Lambda invocation failed: {:?}", e))?;
+        .map_err(|_| format!("Invocation timed out after {}s", timeout_secs))?
+        .map_err(|e| {
+            // Extract concise error message from AWS SDK error
+            if let Some(code) = e.code() {
+                code.to_string()
+            } else {
+                format!("Invocation failed: {}", e)
+            }
+        })?;
 
         Ok(InvokeResponse {
             status_code: result.status_code(),
@@ -490,6 +498,37 @@ pub mod lambda_private {
         }
     }
 
+    /// Probe result details for visualization
+    struct ProbeResult {
+        invoked: bool,      // Successfully invoked Lambda
+        received: bool,     // Received valid response payload
+        status_ok: bool,    // HTTP status was 2xx
+    }
+
+    impl ProbeResult {
+        /// Format probe result as 8-character bitmap matching Varnish format:
+        /// Position 0: '4' if invoked successfully, '-' if failed
+        /// Position 1: '-' (no IPv6)
+        /// Position 2: '-' (no Unix sockets)
+        /// Position 3: 'x' if invoke failed, '-' if successful
+        /// Position 4: 'X' if invoked successfully, '-' if failed
+        /// Position 5: 'r' if payload problem, '-' if ok
+        /// Position 6: 'R' if payload valid, '-' if not
+        /// Position 7: 'H' if happy (2xx status), '-' if not
+        fn to_string(&self) -> String {
+            let mut s = String::with_capacity(8);
+            s.push(if self.invoked { '4' } else { '-' });
+            s.push('-'); // No IPv6
+            s.push('-'); // No Unix sockets
+            s.push(if self.invoked { '-' } else { 'x' });
+            s.push(if self.invoked { 'X' } else { '-' });
+            s.push(if !self.invoked || self.received { '-' } else { 'r' });
+            s.push(if self.received { 'R' } else { '-' });
+            s.push(if self.status_ok { 'H' } else { '-' });
+            s
+        }
+    }
+
     fn spawn_probe(bgt: &'static BgThread, probe_state: *mut ProbeState, name: String, client: LambdaClient) {
         let probe_state = unsafe { probe_state.as_mut().unwrap() };
         let spec = probe_state.spec.clone();
@@ -508,6 +547,11 @@ pub mod lambda_private {
             loop {
                 let msg;
                 let mut time = 0_f64;
+                let mut probe_result = ProbeResult {
+                    invoked: false,
+                    received: false,
+                    status_ok: false,
+                };
 
                 let start = Instant::now();
                 let result = invoke_lambda(
@@ -519,26 +563,35 @@ pub mod lambda_private {
 
                 let new_bit = match result {
                     Err(e) => {
-                        msg = format!("Error: {e}");
+                        msg = e;
+                        // invoked=false, received=false, status_ok=false (all defaults)
                         false
-                    }
-                    Ok(resp) if resp.function_error.is_none() && resp.status_code == 200 => {
-                        msg = format!("Success: status {}", resp.status_code);
-                        if avg_rate < 4.0 {
-                            avg_rate += 1.0;
-                        }
-                        time = start.elapsed().as_secs_f64();
-                        let mut avg = avg.lock().unwrap();
-                        *avg += (time - *avg) / avg_rate;
-                        true
                     }
                     Ok(resp) => {
-                        msg = format!(
-                            "Error: status {}, function_error: {:?}",
-                            resp.status_code,
-                            resp.function_error
-                        );
-                        false
+                        probe_result.invoked = true;
+                        time = start.elapsed().as_secs_f64();
+
+                        if resp.payload.is_some() {
+                            probe_result.received = true;
+                        }
+
+                        let status_ok = resp.function_error.is_none() && resp.status_code == 200;
+                        if status_ok {
+                            probe_result.status_ok = true;
+                            msg = "HTTP/1.1 200 OK".to_string();
+                            if avg_rate < 4.0 {
+                                avg_rate += 1.0;
+                            }
+                            let mut avg = avg.lock().unwrap();
+                            *avg += (time - *avg) / avg_rate;
+                        } else if let Some(func_err) = resp.function_error {
+                            msg = format!("Function error: {}", func_err);
+                        } else if !probe_result.received {
+                            msg = "No response payload".to_string();
+                        } else {
+                            msg = format!("HTTP/1.1 {} Error", resp.status_code);
+                        }
+                        status_ok
                     }
                 };
 
@@ -547,11 +600,11 @@ pub mod lambda_private {
                 log(
                     LogTag::BackendHealth,
                     format!(
-                        "{} {} {} {} {} {} {} {} {} {}",
+                        "{} {} {} {} {} {} {} {:.6} {:.6} {}",
                         name,
                         if health_update.health_unchanged { "Still" } else { "Went" },
                         if health_update.is_healthy { "healthy" } else { "sick" },
-                        name,
+                        probe_result.to_string(),
                         good_probes(health_update.bitmap, spec.window),
                         spec.threshold,
                         spec.window,
