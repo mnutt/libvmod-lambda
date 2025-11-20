@@ -505,7 +505,7 @@ pub mod lambda_private {
         status_ok: bool,    // HTTP status was 2xx
     }
 
-    impl ProbeResult {
+    impl std::fmt::Display for ProbeResult {
         /// Format probe result as 8-character bitmap matching Varnish format:
         /// Position 0: '4' if invoked successfully, '-' if failed
         /// Position 1: '-' (no IPv6)
@@ -515,17 +515,15 @@ pub mod lambda_private {
         /// Position 5: 'r' if payload problem, '-' if ok
         /// Position 6: 'R' if payload valid, '-' if not
         /// Position 7: 'H' if happy (2xx status), '-' if not
-        fn to_string(&self) -> String {
-            let mut s = String::with_capacity(8);
-            s.push(if self.invoked { '4' } else { '-' });
-            s.push('-'); // No IPv6
-            s.push('-'); // No Unix sockets
-            s.push(if self.invoked { '-' } else { 'x' });
-            s.push(if self.invoked { 'X' } else { '-' });
-            s.push(if !self.invoked || self.received { '-' } else { 'r' });
-            s.push(if self.received { 'R' } else { '-' });
-            s.push(if self.status_ok { 'H' } else { '-' });
-            s
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}--{}{}{}{}{}",
+                if self.invoked { '4' } else { '-' },
+                if self.invoked { '-' } else { 'x' },
+                if self.invoked { 'X' } else { '-' },
+                if !self.invoked || self.received { '-' } else { 'r' },
+                if self.received { 'R' } else { '-' },
+                if self.status_ok { 'H' } else { '-' }
+            )
         }
     }
 
@@ -604,7 +602,7 @@ pub mod lambda_private {
                         name,
                         if health_update.health_unchanged { "Still" } else { "Went" },
                         if health_update.is_healthy { "healthy" } else { "sick" },
-                        probe_result.to_string(),
+                        probe_result,
                         good_probes(health_update.bitmap, spec.window),
                         spec.threshold,
                         spec.window,
