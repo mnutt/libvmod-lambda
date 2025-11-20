@@ -69,7 +69,7 @@ client c1 {
 
 # Wait for second probe to fail (at t=~2s)
 # After that 500 error, backend is unhealthy (1 good out of 2 < threshold of 2)
-delay 1.5
+delay 1.7
 
 # Second request should fail with 503 (backend is unhealthy)
 client c2 {
