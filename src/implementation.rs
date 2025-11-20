@@ -74,9 +74,14 @@ pub mod lambda_private {
         /// Cumulative Lambda invocation time in milliseconds
         #[counter(format = "duration")]
         pub invoke_time_ms: AtomicU64,
+    }
 
+    /// Varnish statistics counters for Lambda probe
+    #[derive(VscMetric)]
+    #[repr(C)]
+    pub struct LambdaProbeStats {
         /// Health probe bitmap (last 64 results)
-        #[gauge]
+        #[gauge(format = "bitmap")]
         pub happy: AtomicU64,
     }
 
@@ -350,6 +355,7 @@ pub mod lambda_private {
         pub payload: String,
         pub join_handle: Option<tokio::task::JoinHandle<()>>,
         pub avg: Mutex<f64>,
+        pub stats: Vsc<LambdaProbeStats>,
     }
 
     /// Lambda backend object
@@ -533,6 +539,7 @@ pub mod lambda_private {
         let payload = probe_state.payload.clone();
         let history = &probe_state.history;
         let avg = &probe_state.avg;
+        let happy = &probe_state.stats.happy;
 
         probe_state.join_handle = Some(bgt.rt.spawn(async move {
             let mut h = 0_u64;
@@ -612,6 +619,8 @@ pub mod lambda_private {
                     ),
                 );
                 history.store(health_update.bitmap, Ordering::Relaxed);
+                // Update probe stats immediately so varnishstat shows current state
+                happy.store(health_update.bitmap, Ordering::Relaxed);
                 tokio::time::sleep(spec.interval).await;
             }
         }));
@@ -759,16 +768,13 @@ pub mod lambda_private {
 
         fn healthy(&self, _ctx: &mut Ctx<'_>) -> (bool, SystemTime) {
             let Some(ref probe_state) = self.probe_state else {
-                // No probe: always healthy, update gauge
-                self.stats.happy.store(u64::MAX, Ordering::Relaxed);
+                // No probe: always healthy
                 return (true, SystemTime::UNIX_EPOCH);
             };
 
             assert!(probe_state.spec.window <= 64);
 
             let bitmap = probe_state.history.load(Ordering::Relaxed);
-            // Update the happy gauge with the current probe bitmap
-            self.stats.happy.store(bitmap, Ordering::Relaxed);
 
             (
                 is_healthy(bitmap, probe_state.spec.window, probe_state.spec.threshold),
@@ -884,6 +890,7 @@ pub mod lambda_private {
 
     pub fn build_probe_state(
         mut probe: Probe,
+        vcl_name: &str,
     ) -> Result<ProbeState, VclError> {
         // Sanitize probe (see vbp_set_defaults in Varnish Cache)
         if probe.timeout.is_zero() {
@@ -928,6 +935,9 @@ pub mod lambda_private {
             }
         };
 
+        // Create probe stats with naming format: lambda.{vcl_name}.probe.{metric}
+        let stats = Vsc::new("lambda", &format!("{}.probe", vcl_name));
+
         Ok(ProbeState {
             spec: probe,
             history: AtomicU64::new(0),
@@ -935,6 +945,7 @@ pub mod lambda_private {
             join_handle: None,
             payload,
             avg: Mutex::new(0_f64),
+            stats,
         })
     }
 }

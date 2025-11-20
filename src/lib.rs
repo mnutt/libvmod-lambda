@@ -49,14 +49,7 @@ mod lambda {
                 .map(|d| d.as_secs())
                 .unwrap_or(DEFAULT_LAMBDA_TIMEOUT_SECS);
 
-            let probe_state = match probe {
-                Some(spec) => Some(build_probe_state(spec).map_err(|e| {
-                    VclError::new(format!("lambda: failed to add probe to {vcl_name} ({e})"))
-                })?),
-                None => None,
-            };
-
-            let has_probe = probe_state.is_some();
+            let has_probe = probe.is_some();
 
             // Create VSC statistics for this backend
             // Format: lambda.{vcl_name}.{metric_name}
@@ -64,6 +57,13 @@ mod lambda {
                 "lambda",
                 vcl_name,
             );
+
+            let probe_state = match probe {
+                Some(spec) => Some(build_probe_state(spec, vcl_name).map_err(|e| {
+                    VclError::new(format!("lambda: failed to add probe to {vcl_name} ({e})"))
+                })?),
+                None => None,
+            };
 
             let be = Backend::new(
                 ctx,
