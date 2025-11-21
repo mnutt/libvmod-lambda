@@ -13,6 +13,15 @@ server s1 {
         -hdr "Content-Type: text/plain" \
         -hdr "x-amzn-RequestId: test-request-id" \
         -body "HTTP/1.1 201 Created\r\nX-Custom-Header: custom-value\r\nContent-Type: application/json\r\n\r\n{\"message\":\"resource created\"}"
+
+    # Second request: binary data with invalid UTF-8 in body
+    # The response body itself contains raw HTTP with binary data
+    rxreq
+    expect req.url == "/2015-03-31/functions/raw-response-test/invocations"
+    txresp -status 200 \
+        -hdr "Content-Type: application/octet-stream" \
+        -hdr "x-amzn-RequestId: test-request-id-2" \
+        -bodyfrom "${testdir}/binary_response.bin"
 } -start
 
 varnish v1 -vcl {
@@ -46,4 +55,16 @@ client c1 {
     expect resp.http.X-Custom-Header == "custom-value"
     expect resp.http.Content-Type == "application/json"
     expect resp.body == {{"message":"resource created"}}
+} -run
+
+# Test binary response with non-UTF-8 data in body
+# This validates that the fix allows binary data in response bodies
+client c2 {
+    txreq -url "/api/binary" \
+        -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Content-Type == "application/octet-stream"
+    expect resp.http.Content-Length == "10"
+    expect resp.bodylen == 10
 } -run

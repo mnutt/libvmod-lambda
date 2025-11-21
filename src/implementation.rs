@@ -211,10 +211,24 @@ pub mod lambda_private {
     /// {"message":"Hello, world!"}
     /// ```
     fn parse_raw_http_response(payload: &[u8]) -> VclResult<(u16, HashMap<String, String>, Vec<u8>)> {
-        let response_str = std::str::from_utf8(payload)
-            .map_err(|e| format!("Invalid UTF-8 in raw HTTP response: {}", e))?;
+        // Find the end of headers (marked by \r\n\r\n or \n\n)
+        let (header_end, separator_len) = payload.windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|pos| (pos, 4))
+            .or_else(|| {
+                payload.windows(2)
+                    .position(|w| w == b"\n\n")
+                    .map(|pos| (pos, 2))
+            })
+            .ok_or("No header/body separator found in HTTP response")?;
 
-        let mut lines = response_str.lines();
+        let body_start = header_end + separator_len;
+
+        // Only validate UTF-8 for headers, not the body
+        let headers_str = std::str::from_utf8(&payload[..header_end])
+            .map_err(|e| format!("Invalid UTF-8 in HTTP headers: {}", e))?;
+
+        let mut lines = headers_str.lines();
 
         // Parse status line: "HTTP/1.1 200 OK"
         let status_line = lines.next()
@@ -228,18 +242,9 @@ pub mod lambda_private {
 
         // Parse headers
         let mut headers = HashMap::new();
-        let mut body_start = 0;
 
-        for (idx, line) in lines.enumerate() {
+        for line in lines {
             if line.is_empty() {
-                // Empty line marks end of headers
-                // Calculate byte offset for body start
-                // Note: lines() strips \r\n, but actual data has \r\n (2 bytes)
-                body_start = status_line.len() + 2; // +2 for \r\n
-                for h_line in response_str.lines().take(idx + 1).skip(1) {
-                    body_start += h_line.len() + 2; // +2 for \r\n
-                }
-                body_start += 2; // Final empty line \r\n
                 break;
             }
 
@@ -251,12 +256,10 @@ pub mod lambda_private {
             }
         }
 
-        // Extract body
-        let body_bytes = if body_start < payload.len() {
-            payload[body_start..].to_vec()
-        } else {
-            Vec::new()
-        };
+        // Extract body as raw bytes (may contain non-UTF-8 data)
+        let body_bytes = payload.get(body_start..)
+            .map(|bytes| bytes.to_vec())
+            .unwrap_or_default();
 
         Ok((status_code, headers, body_bytes))
     }
