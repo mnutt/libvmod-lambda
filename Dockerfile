@@ -49,13 +49,12 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY tests ./tests
 
-# Build the vmod
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo build --release
-
-
-# Find the correct vmod directory and install the vmod
-RUN VMOD_DIR=$(pkg-config --variable=vmoddir varnishapi) && \
+# Build the vmod with enhanced caching and copy artifacts out
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/git/db \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release && \
+    VMOD_DIR=$(pkg-config --variable=vmoddir varnishapi) && \
     mkdir -p ${VMOD_DIR} && \
     cp target/release/libvmod_lambda.so ${VMOD_DIR}/libvmod_lambda.so && \
     find target/release -name '*.vcc' | head -1 | xargs -I {} cp {} ${VMOD_DIR}/vmod_lambda.vcc && \
