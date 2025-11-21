@@ -1,0 +1,87 @@
+varnishtest "Test lambda backend with chunked transfer encoding (response_format=\"http\")"
+
+# Mock Lambda endpoint that returns a raw HTTP response with chunked encoding
+server s1 {
+    rxreq
+    expect req.url == "/2015-03-31/functions/chunked-test/invocations"
+    expect req.method == "POST"
+    expect req.http.X-Amz-Invocation-Type == "RequestResponse"
+
+    # Return Lambda response with chunked HTTP payload
+    # Format: chunk-size (hex) CRLF chunk-data CRLF ... 0 CRLF CRLF
+    # Chunk 1: 0x10 (16 bytes) = {"message":"Hell
+    # Chunk 2: 0x0D (13 bytes) = o, chunked!"}
+    txresp -status 200 \
+        -hdr "Content-Type: text/plain" \
+        -hdr "x-amzn-RequestId: test-request-id" \
+        -body "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n{\"message\":\"Hell\r\nD\r\no, chunked!\"}\r\n0\r\n\r\n"
+
+    # Second request: test multiple chunks with different sizes
+    rxreq
+    expect req.url == "/2015-03-31/functions/chunked-test/invocations"
+    txresp -status 200 \
+        -hdr "Content-Type: text/plain" \
+        -hdr "x-amzn-RequestId: test-request-id-2" \
+        -body "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n1\r\n \r\n5\r\nWorld\r\n0\r\n\r\n"
+
+    # Third request: chunked with chunk extensions
+    rxreq
+    expect req.url == "/2015-03-31/functions/chunked-test/invocations"
+    txresp -status 200 \
+        -hdr "Content-Type: text/plain" \
+        -hdr "x-amzn-RequestId: test-request-id-3" \
+        -body "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5;name=value\r\nChunk\r\n0\r\n\r\n"
+} -start
+
+varnish v1 -vcl {
+    import lambda from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new my_lambda = lambda.backend(
+            function_name="chunked-test",
+            region="us-east-1",
+            endpoint_url="http://${s1_addr}:${s1_port}",
+            response_format="http"
+        );
+    }
+
+    sub vcl_recv {
+        return (pass);
+    }
+
+    sub vcl_backend_fetch {
+        set bereq.backend = my_lambda.backend();
+    }
+} -start
+
+# Test basic chunked response
+client c1 {
+    txreq -url "/api/test1" \
+        -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Content-Type == "application/json"
+    expect resp.body == {{"message":"Hello, chunked!"}}
+} -run
+
+# Test multiple chunks
+client c2 {
+    txreq -url "/api/test2" \
+        -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Content-Type == "text/plain"
+    expect resp.body == "Hello World"
+} -run
+
+# Test chunked with extensions
+client c3 {
+    txreq -url "/api/test3" \
+        -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Content-Type == "text/plain"
+    expect resp.body == "Chunk"
+} -run

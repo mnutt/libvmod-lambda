@@ -215,6 +215,71 @@ pub mod lambda_private {
         Ok((response.status_code, response.headers, body_bytes))
     }
 
+    /// Decode chunked transfer encoding from a byte stream
+    ///
+    /// Format: chunk-size (hex) CRLF chunk-data CRLF ... 0 CRLF CRLF
+    /// Per RFC 7230, CRLF is required (not just LF)
+    fn decode_chunked_body(chunked_data: &[u8]) -> VclResult<Vec<u8>> {
+        let mut result = Vec::new();
+        let mut pos = 0;
+
+        loop {
+            // Find the end of the chunk size line (must be CRLF per RFC 7230)
+            let line_end = chunked_data[pos..]
+                .windows(2)
+                .position(|w| w == b"\r\n")
+                .ok_or("Invalid chunked encoding: missing CRLF after chunk size")?;
+
+            let line_end_pos = pos + line_end;
+
+            // Parse chunk size (hex)
+            let chunk_size_str = std::str::from_utf8(&chunked_data[pos..line_end_pos])
+                .map_err(|e| format!("Invalid UTF-8 in chunk size: {}", e))?
+                .trim();
+
+            // Handle chunk extensions (e.g., "5;name=value")
+            let chunk_size_only = chunk_size_str
+                .split(';')
+                .next()
+                .unwrap() // split always returns at least one element
+                .trim();
+
+            let chunk_size = usize::from_str_radix(chunk_size_only, 16)
+                .map_err(|e| format!("Invalid chunk size '{}': {}", chunk_size_only, e))?;
+
+            // Move past the CRLF
+            pos = line_end_pos + 2;
+
+            // Check for final chunk (size 0)
+            if chunk_size == 0 {
+                break;
+            }
+
+            // Append chunk data to result
+            let chunk_data = chunked_data
+                .get(pos..pos + chunk_size)
+                .ok_or_else(|| format!(
+                    "Incomplete chunk: expected {} bytes at position {}, but only {} bytes available",
+                    chunk_size,
+                    pos,
+                    chunked_data.len() - pos
+                ))?;
+            result.extend_from_slice(chunk_data);
+            pos += chunk_size;
+
+            // Validate and skip trailing CRLF after chunk data
+            let trailing_crlf = chunked_data
+                .get(pos..pos + 2)
+                .ok_or("Invalid chunked encoding: missing CRLF after chunk data")?;
+            if trailing_crlf != b"\r\n" {
+                return Err("Invalid chunked encoding: missing CRLF after chunk data".into());
+            }
+            pos += 2;
+        }
+
+        Ok(result)
+    }
+
     /// Parse raw HTTP response from Lambda
     ///
     /// The expected format of the payload (using \r\n as line endings):
@@ -224,6 +289,18 @@ pub mod lambda_private {
     /// Content-Length: 12
     ///
     /// {"message":"Hello, world!"}
+    /// ```
+    ///
+    /// Also supports chunked transfer encoding:
+    /// ```
+    /// HTTP/1.1 200 OK
+    /// Content-Type: application/json
+    /// Transfer-Encoding: chunked
+    ///
+    /// 5\r\n
+    /// Hello\r\n
+    /// 0\r\n
+    /// \r\n
     /// ```
     fn parse_raw_http_response(payload: &[u8]) -> VclResult<(u16, HashMap<String, String>, Vec<u8>)> {
         // Find the end of headers (marked by \r\n\r\n or \n\n)
@@ -257,6 +334,7 @@ pub mod lambda_private {
 
         // Parse headers
         let mut headers = HashMap::new();
+        let mut is_chunked = false;
 
         for line in lines {
             if line.is_empty() {
@@ -264,17 +342,30 @@ pub mod lambda_private {
             }
 
             if let Some((name, value)) = line.split_once(':') {
-                headers.insert(
-                    name.trim().to_lowercase(),
-                    value.trim().to_string()
-                );
+                let name_lower = name.trim().to_lowercase();
+                let value_trimmed = value.trim().to_string();
+
+                // Check for chunked transfer encoding
+                if name_lower == "transfer-encoding" && value_trimmed.to_lowercase().contains("chunked") {
+                    is_chunked = true;
+                }
+
+                headers.insert(name_lower, value_trimmed);
             }
         }
 
-        // Extract body as raw bytes (may contain non-UTF-8 data)
-        let body_bytes = payload.get(body_start..)
-            .map(|bytes| bytes.to_vec())
-            .unwrap_or_default();
+        // Extract and decode body
+        let body_bytes = if is_chunked {
+            // Decode chunked transfer encoding
+            let chunked_data = payload.get(body_start..)
+                .ok_or("Missing body data for chunked response")?;
+            decode_chunked_body(chunked_data)?
+        } else {
+            // Extract body as raw bytes (may contain non-UTF-8 data)
+            payload.get(body_start..)
+                .map(|bytes| bytes.to_vec())
+                .unwrap_or_default()
+        };
 
         Ok((status_code, headers, body_bytes))
     }
