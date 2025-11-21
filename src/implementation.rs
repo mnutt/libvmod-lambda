@@ -642,7 +642,7 @@ pub mod lambda_private {
         }
     }
 
-    fn spawn_probe(bgt: &'static BgThread, probe_state: *mut ProbeState, name: String, client: LambdaClient) {
+    fn spawn_probe(bgt: &'static BgThread, probe_state: *mut ProbeState, name: String, client: LambdaClient, response_format: ResponseFormat) {
         let probe_state = unsafe { probe_state.as_mut().unwrap() };
         let spec = probe_state.spec.clone();
         let payload = probe_state.payload.clone();
@@ -685,27 +685,47 @@ pub mod lambda_private {
                         probe_result.invoked = true;
                         time = start.elapsed().as_secs_f64();
 
-                        if resp.payload.is_some() {
-                            probe_result.received = true;
-                        }
-
-                        let status_ok = resp.function_error.is_none() && resp.status_code == 200;
-                        if status_ok {
-                            probe_result.status_ok = true;
-                            msg = "HTTP/1.1 200 OK".to_string();
-                            if avg_rate < 4.0 {
-                                avg_rate += 1.0;
-                            }
-                            let mut avg = avg.lock().unwrap();
-                            *avg += (time - *avg) / avg_rate;
-                        } else if let Some(func_err) = resp.function_error {
+                        // Check for Lambda-level errors first
+                        if let Some(func_err) = resp.function_error {
                             msg = format!("Function error: {}", func_err);
-                        } else if !probe_result.received {
-                            msg = "No response payload".to_string();
+                            false
+                        } else if resp.status_code != 200 {
+                            msg = format!("Lambda invocation failed: status {}", resp.status_code);
+                            false
+                        } else if let Some(ref payload) = resp.payload {
+                            probe_result.received = true;
+
+                            // Parse the response payload to get the inner HTTP status
+                            let parse_result = match response_format {
+                                ResponseFormat::Http => parse_raw_http_response(payload.as_ref()),
+                                ResponseFormat::Json => parse_json_response(payload.as_ref()),
+                            };
+
+                            match parse_result {
+                                Ok((status_code, _, _)) => {
+                                    let status_ok = (200..300).contains(&status_code);
+                                    if status_ok {
+                                        probe_result.status_ok = true;
+                                        msg = format!("HTTP/1.1 {} OK", status_code);
+                                        if avg_rate < 4.0 {
+                                            avg_rate += 1.0;
+                                        }
+                                        let mut avg = avg.lock().unwrap();
+                                        *avg += (time - *avg) / avg_rate;
+                                    } else {
+                                        msg = format!("HTTP/1.1 {} Error", status_code);
+                                    }
+                                    status_ok
+                                }
+                                Err(e) => {
+                                    msg = format!("Failed to parse response: {}", e);
+                                    false
+                                }
+                            }
                         } else {
-                            msg = format!("HTTP/1.1 {} Error", resp.status_code);
+                            msg = "No response payload".to_string();
+                            false
                         }
-                        status_ok
                     }
                 };
 
@@ -905,6 +925,7 @@ pub mod lambda_private {
                         std::ptr::from_ref::<ProbeState>(probe_state).cast_mut(),
                         self.function_name.clone(),
                         self.client.clone(),
+                        self.response_format,
                     );
                 }
                 Event::Cold => {
