@@ -27,6 +27,21 @@ pub mod lambda_private {
     use varnish::ffi::{BS_NONE, VRB_Iterate, ObjIterate};
     use varnish::{Vsc, VscMetric};
 
+    /// Response format for Lambda invocations
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ResponseFormat {
+        /// JSON response format (default)
+        Json,
+        /// Raw HTTP response format
+        Http,
+    }
+
+    impl Default for ResponseFormat {
+        fn default() -> Self {
+            ResponseFormat::Json
+        }
+    }
+
     /// Varnish statistics counters for Lambda backend
     #[derive(VscMetric)]
     #[repr(C)]
@@ -378,7 +393,7 @@ pub mod lambda_private {
         pub client: LambdaClient,
         pub timeout_secs: u64,
         pub probe_state: Option<ProbeState>,
-        pub raw_response_mode: bool,
+        pub response_format: ResponseFormat,
         pub stats: Vsc<LambdaBackendStats>,
     }
 
@@ -731,11 +746,10 @@ pub mod lambda_private {
                         return Err("Empty Lambda response".into());
                     };
 
-                    // Parse response based on mode
-                    let (status_code, headers, body_bytes) = if self.raw_response_mode {
-                        parse_raw_http_response(&payload)?
-                    } else {
-                        parse_json_response(&payload)?
+                    // Parse response based on format
+                    let (status_code, headers, body_bytes) = match self.response_format {
+                        ResponseFormat::Http => parse_raw_http_response(&payload)?,
+                        ResponseFormat::Json => parse_json_response(&payload)?,
                     };
 
                     // Track function errors based on status code

@@ -14,7 +14,7 @@ mod lambda {
 
     use crate::implementation::lambda_private::{
         build_probe_state, backend, BgThread, InvokeRequest, VCLBackend,
-        DEFAULT_LAMBDA_TIMEOUT_SECS, build_lambda_client,
+        DEFAULT_LAMBDA_TIMEOUT_SECS, build_lambda_client, ResponseFormat,
     };
 
     impl backend {
@@ -34,9 +34,9 @@ mod lambda {
             timeout: Option<Duration>,
             /// Health probe configuration
             probe: Option<Probe>,
-            /// Whether to expect raw HTTP responses instead of JSON (default: false)
-            #[default(false)]
-            raw_response_mode: bool,
+            /// Response format: "json" (default) or "http" (C++ runtime only)
+            #[default("json")]
+            response_format: &str,
         ) -> Result<Self, VclError> {
             // Use the BgThread's runtime to initialize the AWS client
             // This ensures the client is created in the same runtime context it will be used in
@@ -48,6 +48,16 @@ mod lambda {
             let timeout_secs = timeout
                 .map(|d| d.as_secs())
                 .unwrap_or(DEFAULT_LAMBDA_TIMEOUT_SECS);
+
+            // Parse response format
+            let response_format = match response_format {
+                "json" => ResponseFormat::Json,
+                "http" => ResponseFormat::Http,
+                _ => return Err(VclError::new(format!(
+                    "Invalid response_format '{}': must be 'json' or 'http'",
+                    response_format
+                ))),
+            };
 
             let has_probe = probe.is_some();
 
@@ -76,7 +86,7 @@ mod lambda {
                     client: client.clone(),
                     timeout_secs,
                     probe_state,
-                    raw_response_mode,
+                    response_format,
                     stats,
                 },
                 has_probe,

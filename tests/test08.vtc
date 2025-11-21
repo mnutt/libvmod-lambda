@@ -1,4 +1,4 @@
-varnishtest "Test lambda backend with JSON response mode (raw_response_mode=false)"
+varnishtest "Test lambda backend with JSON response format (response_format=\"json\")"
 
 # Mock Lambda endpoint that returns a JSON response with headers and body
 server s1 {
@@ -24,7 +24,7 @@ varnish v1 -vcl {
             function_name="json-response-test",
             region="us-east-1",
             endpoint_url="http://${s1_addr}:${s1_port}",
-            raw_response_mode=false
+            response_format="json"
         );
     }
 

@@ -94,7 +94,7 @@ Creates a new Lambda backend object.
 - `endpoint_url` (STRING, optional): Custom endpoint URL (e.g., for LocalStack)
 - `timeout` (DURATION, optional): Lambda invocation timeout in seconds (default: 62s)
 - `probe` (PROBE, optional): Health probe configuration
-- `raw_response_mode` (BOOL, optional): Whether to expect raw HTTP responses instead of JSON (default: false)
+- `response_format` (STRING, optional): Response format - "json" (default) or "http" (C++ runtime only)
 
 **Returns:** Backend object
 

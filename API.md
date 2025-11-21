@@ -17,7 +17,7 @@ import lambda;
 import lambda from "path/to/liblambda.so";
 ```
 
-### Constructor `lambda.backend(STRING function_name, STRING region, [STRING endpoint_url], [DURATION timeout], [PROBE probe], BOOL raw_response_mode = 0)`
+### Constructor `lambda.backend(STRING function_name, STRING region, [STRING endpoint_url], [DURATION timeout], [PROBE probe], STRING response_format = "json")`
 
 Create a new Lambda backend
 
@@ -31,8 +31,8 @@ Optional custom endpoint URL (e.g., for LocalStack)
 Lambda invocation timeout in seconds (default: 62)
 * `[PROBE probe]`:
 Health probe configuration
-* `BOOL raw_response_mode`:
-Whether to expect raw HTTP responses instead of JSON (default: false)
+* `STRING response_format`:
+Response format: "json" (default) or "http" (C++ runtime only)
 
 #### Method `STRING <object>.invoke(STRING payload)`
 

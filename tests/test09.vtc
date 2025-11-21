@@ -1,4 +1,4 @@
-varnishtest "Test lambda backend with raw HTTP response mode (raw_response_mode=true)"
+varnishtest "Test lambda backend with raw HTTP response format (response_format=\"http\")"
 
 # Mock Lambda endpoint that returns a raw HTTP response
 server s1 {
@@ -34,7 +34,7 @@ varnish v1 -vcl {
             function_name="raw-response-test",
             region="us-east-1",
             endpoint_url="http://${s1_addr}:${s1_port}",
-            raw_response_mode=true
+            response_format="http"
         );
     }
 

@@ -14,9 +14,10 @@ probe lambda_probe {
 
 sub vcl_init {
     new my_lambda = lambda.backend(
-        function_name="test-function",
+        function_name="my-lambda-function",
         region="us-east-2",
-        probe=lambda_probe
+        probe=lambda_probe,
+        response_format="http"
     );
 }
 
