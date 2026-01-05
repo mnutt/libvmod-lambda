@@ -54,6 +54,6 @@ client c2 {
 
 # Check VSC metrics
 varnish v1 -expect lambda.my_lambda.req == 2
-varnish v1 -expect lambda.my_lambda.function_error >= 1
+varnish v1 -expect lambda.my_lambda.function_error == 0
 varnish v1 -expect lambda.my_lambda.bereq_hdrbytes > 0
 varnish v1 -expect lambda.my_lambda.beresp_bodybytes > 0

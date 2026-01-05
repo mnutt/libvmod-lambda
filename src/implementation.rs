@@ -863,11 +863,6 @@ pub mod lambda_private {
                         ResponseFormat::Json => parse_json_response(&payload)?,
                     };
 
-                    // Track function errors based on status code
-                    if !(200..300).contains(&status_code) {
-                        self.stats.function_error.fetch_add(1, Ordering::Relaxed);
-                    }
-
                     // Calculate response header bytes
                     let mut resp_header_bytes = 0u64;
                     for (name, value) in &headers {
