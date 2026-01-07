@@ -9,6 +9,7 @@ pub mod lambda_private {
     use aws_sdk_lambda::types::InvocationType;
     use aws_credential_types::Credentials;
     use aws_types::region::Region;
+    use aws_sdk_lambda::config::retry::RetryConfig;
     use bytes::Bytes;
     use std::error::Error;
     use std::sync::Arc;
@@ -127,7 +128,13 @@ pub mod lambda_private {
                 .await
         };
 
-        let mut lambda_config = LambdaConfigBuilder::from(&sdk_config);
+        // Disable SDK retries - let Varnish handle retry logic at a higher level.
+        // This prevents worker threads from being blocked during exponential backoff
+        // and ensures metrics (inflight, throttled, fail) are accurate.
+        let retry_config = RetryConfig::standard().with_max_attempts(1);
+
+        let mut lambda_config = LambdaConfigBuilder::from(&sdk_config)
+            .retry_config(retry_config);
         if let Some(url) = endpoint_url {
             lambda_config = lambda_config.endpoint_url(url);
         }
