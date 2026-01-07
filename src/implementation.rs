@@ -4,18 +4,16 @@ pub mod lambda_private {
     use tokio::sync::Semaphore;
     use tokio::time::Duration as TokioDuration;
     use aws_sdk_lambda::Client as LambdaClient;
-    use aws_sdk_lambda::config::Builder as LambdaConfigBuilder;
     use aws_sdk_lambda::error::ProvideErrorMetadata;
     use aws_sdk_lambda::types::InvocationType;
-    use aws_credential_types::Credentials;
-    use aws_types::region::Region;
-    use aws_sdk_lambda::config::retry::RetryConfig;
     use bytes::Bytes;
     use std::error::Error;
     use std::sync::Arc;
     use std::sync::mpsc as std_mpsc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
+
+    use crate::aws_client_pool::ClientPool;
     use std::time::{Duration, Instant, SystemTime};
     use std::io::Write;
     use std::collections::HashMap;
@@ -99,46 +97,6 @@ pub mod lambda_private {
         /// Health probe bitmap (last 64 results)
         #[gauge(format = "bitmap")]
         pub happy: AtomicU64,
-    }
-
-    /// Build a Lambda client with the specified configuration
-    pub async fn build_lambda_client(region: Region, endpoint_url: Option<String>) -> LambdaClient {
-        let sdk_config = if endpoint_url.is_some() {
-            // Custom endpoint configuration: use credentials from environment if available
-            let access_key = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_default();
-            let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default();
-            let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
-
-            aws_config::defaults(aws_config::BehaviorVersion::latest())
-                .region(region.clone())
-                .credentials_provider(Credentials::new(
-                    access_key,
-                    secret_key,
-                    session_token,
-                    None,
-                    "custom-endpoint"
-                ))
-                .load()
-                .await
-        } else {
-            // Production configuration: use real credentials from environment
-            aws_config::from_env()
-                .region(region.clone())
-                .load()
-                .await
-        };
-
-        // Disable SDK retries - let Varnish handle retry logic at a higher level.
-        // This prevents worker threads from being blocked during exponential backoff
-        // and ensures metrics (inflight, throttled, fail) are accurate.
-        let retry_config = RetryConfig::standard().with_max_attempts(1);
-
-        let mut lambda_config = LambdaConfigBuilder::from(&sdk_config)
-            .retry_config(retry_config);
-        if let Some(url) = endpoint_url {
-            lambda_config = lambda_config.endpoint_url(url);
-        }
-        LambdaClient::from_conf(lambda_config.build())
     }
 
     /// Lambda HTTP request payload
@@ -488,7 +446,8 @@ pub mod lambda_private {
         pub name: String,
         pub function_name: String,
         pub bgt: *const BgThread,
-        pub client: LambdaClient,
+        /// Pool of Lambda clients for HTTP/2 connection distribution
+        pub pool: ClientPool,
         pub timeout_secs: u64,
         pub probe_state: Option<ProbeState>,
         pub response_format: ResponseFormat,
@@ -825,10 +784,13 @@ pub mod lambda_private {
             self.stats.bereq_hdrbytes.fetch_add(header_bytes, Ordering::Relaxed);
             self.stats.bereq_bodybytes.fetch_add(body_bytes, Ordering::Relaxed);
 
+            // Acquire a client from the pool (uses power-of-two choices for load balancing)
+            let client_guard = self.pool.acquire();
+
             let req = InvokeRequest {
                 function_name: self.function_name.clone(),
                 payload,
-                client: self.client.clone(),
+                client: client_guard.client().clone(),
                 timeout_secs: self.timeout_secs,
             };
 
@@ -926,7 +888,7 @@ pub mod lambda_private {
                         unsafe { &*self.bgt },
                         std::ptr::from_ref::<ProbeState>(probe_state).cast_mut(),
                         self.function_name.clone(),
-                        self.client.clone(),
+                        self.pool.first_client().clone(),
                         self.response_format,
                     );
                 }

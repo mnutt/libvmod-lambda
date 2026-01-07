@@ -11,7 +11,8 @@ varnish v1 -vcl+backend {
     sub vcl_init {
         new my_lambda = lambda.backend(
             function_name="test-function",
-            region="us-east-1"
+            region="us-east-1",
+            pool_size=1
         );
     }
 

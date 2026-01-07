@@ -17,7 +17,7 @@ import lambda;
 import lambda from "path/to/liblambda.so";
 ```
 
-### Constructor `lambda.backend(STRING function_name, STRING region, [STRING endpoint_url], [DURATION timeout], [PROBE probe], STRING response_format = "json")`
+### Constructor `lambda.backend(STRING function_name, STRING region, [STRING endpoint_url], [DURATION timeout], [PROBE probe], STRING response_format = "json", [INT pool_size])`
 
 Create a new Lambda backend
 
@@ -33,6 +33,9 @@ Lambda invocation timeout in seconds (default: 62)
 Health probe configuration
 * `STRING response_format`:
 Response format: "json" (default) or "http" (C++ runtime only)
+* `[INT pool_size]`:
+Number of Lambda clients in the pool (default: 64)
+Each client maintains its own HTTP/2 connection for parallel requests
 
 #### Method `STRING <object>.invoke(STRING payload)`
 

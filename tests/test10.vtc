@@ -27,7 +27,8 @@ varnish v1 -vcl {
         new my_lambda = lambda.backend(
             function_name="test-vsc",
             region="us-west-2",
-            endpoint_url="http://${s1_addr}:${s1_port}"
+            endpoint_url="http://${s1_addr}:${s1_port}",
+            pool_size=1
         );
     }
 

@@ -36,7 +36,8 @@ varnish v1 -vcl {
             function_name="probe-test",
             region="us-east-1",
             endpoint_url="http://${s1_addr}:${s1_port}",
-            probe=lambda_probe
+            probe=lambda_probe,
+            pool_size=1
         );
     }
 

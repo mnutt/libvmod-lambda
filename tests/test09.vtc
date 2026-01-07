@@ -34,7 +34,8 @@ varnish v1 -vcl {
             function_name="raw-response-test",
             region="us-east-1",
             endpoint_url="http://${s1_addr}:${s1_port}",
-            response_format="http"
+            response_format="http",
+            pool_size=1
         );
     }
 

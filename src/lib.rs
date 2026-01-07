@@ -1,3 +1,5 @@
+mod aws_client;
+mod aws_client_pool;
 mod implementation;
 
 use varnish::run_vtc_tests;
@@ -6,6 +8,7 @@ run_vtc_tests!("tests/*.vtc");
 #[varnish::vmod(docs = "API.md")]
 mod lambda {
     use std::error::Error;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use aws_types::region::Region;
@@ -14,8 +17,9 @@ mod lambda {
 
     use crate::implementation::lambda_private::{
         build_probe_state, backend, BgThread, InvokeRequest, VCLBackend,
-        DEFAULT_LAMBDA_TIMEOUT_SECS, build_lambda_client, ResponseFormat,
+        DEFAULT_LAMBDA_TIMEOUT_SECS, ResponseFormat,
     };
+    use crate::aws_client_pool::{ClientPool, DEFAULT_POOL_SIZE};
 
     impl backend {
         #[allow(clippy::too_many_arguments)]
@@ -37,13 +41,24 @@ mod lambda {
             /// Response format: "json" (default) or "http" (C++ runtime only)
             #[default("json")]
             response_format: &str,
+            /// Number of Lambda clients in the pool (default: 64)
+            /// Each client maintains its own HTTP/2 connection for parallel requests
+            pool_size: Option<i64>,
         ) -> Result<Self, VclError> {
-            // Use the BgThread's runtime to initialize the AWS client
-            // This ensures the client is created in the same runtime context it will be used in
+            // Use the BgThread's runtime to initialize the client pool
+            // This ensures clients are created in the same runtime context they will be used in
             let bg = vp_vcl.as_ref().expect("BgThread not initialized");
             let region_obj = Region::new(region.to_string());
             let endpoint_url_opt = endpoint_url.map(String::from);
-            let client = bg.rt.block_on(build_lambda_client(region_obj, endpoint_url_opt));
+            let pool_size = match pool_size {
+                Some(s) if s > 0 => s as usize,
+                Some(s) => return Err(VclError::new(format!(
+                    "Invalid pool_size '{}': must be a positive integer",
+                    s
+                ))),
+                None => DEFAULT_POOL_SIZE,
+            };
+            let pool = bg.rt.block_on(ClientPool::build(region_obj, endpoint_url_opt, pool_size));
 
             let timeout_secs = timeout
                 .map(|d| d.as_secs())
@@ -83,7 +98,7 @@ mod lambda {
                     name: vcl_name.to_string(),
                     function_name: function_name.to_string(),
                     bgt: &raw const **vp_vcl.as_ref().unwrap(),
-                    client: client.clone(),
+                    pool,
                     timeout_secs,
                     probe_state,
                     response_format,
@@ -109,14 +124,18 @@ mod lambda {
             let bg = vp_vcl.ok_or("VMOD not initialized")?;
             let vcl_backend = self.be.get_inner();
 
+            let client_guard = vcl_backend.pool.acquire();
             let req = InvokeRequest {
                 function_name: vcl_backend.function_name.clone(),
                 payload: payload.as_bytes().to_vec(),
-                client: vcl_backend.client.clone(),
+                client: client_guard.client().clone(),
                 timeout_secs: vcl_backend.timeout_secs,
             };
 
-            let result = bg.invoke_sync(req)?;
+            vcl_backend.stats.inflight.fetch_add(1, Ordering::Relaxed);
+            let result = bg.invoke_sync(req);
+            vcl_backend.stats.inflight.fetch_sub(1, Ordering::Relaxed);
+            let result = result?;
 
             // Return the payload as a string, or error message
             if let Some(error) = result.function_error {
@@ -138,7 +157,8 @@ mod lambda {
         pub fn get_region(&self, _ctx: &Ctx) -> String {
             self.be
                 .get_inner()
-                .client
+                .pool
+                .first_client()
                 .config()
                 .region()
                 .map(|r| r.to_string())

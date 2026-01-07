@@ -24,7 +24,8 @@ varnish v1 -vcl {
             function_name="json-response-test",
             region="us-east-1",
             endpoint_url="http://${s1_addr}:${s1_port}",
-            response_format="json"
+            response_format="json",
+            pool_size=1
         );
     }
 

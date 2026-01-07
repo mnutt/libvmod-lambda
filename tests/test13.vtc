@@ -1,0 +1,67 @@
+varnishtest "Test lambda backend with connection pool (pool_size > 1)"
+
+# Mock Lambda endpoint that accepts multiple connections
+# -repeat 4 allows the server to accept 4 separate connections
+server s1 -repeat 4 {
+    rxreq
+    expect req.url == "/2015-03-31/functions/pool-test/invocations"
+    expect req.method == "POST"
+    expect req.http.X-Amz-Invocation-Type == "RequestResponse"
+
+    # Return Lambda response
+    txresp -status 200 \
+        -hdr "Content-Type: application/json" \
+        -hdr "x-amzn-RequestId: test-request-id" \
+        -body {{"statusCode": 200, "body": "OK"}}
+} -start
+
+varnish v1 -vcl {
+    import lambda from "${vmod}";
+
+    backend default none;
+
+    sub vcl_init {
+        new my_lambda = lambda.backend(
+            function_name="pool-test",
+            region="us-east-1",
+            endpoint_url="http://${s1_addr}:${s1_port}",
+            pool_size=2
+        );
+    }
+
+    sub vcl_recv {
+        return (pass);
+    }
+
+    sub vcl_backend_fetch {
+        set bereq.backend = my_lambda.backend();
+    }
+} -start
+
+# Make multiple sequential requests to exercise the pool
+# With pool_size=2, requests may go to different clients/connections
+client c1 {
+    txreq -url "/api/test1" -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 200
+} -run
+
+client c2 {
+    txreq -url "/api/test2" -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 200
+} -run
+
+client c3 {
+    txreq -url "/api/test3" -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 200
+} -run
+
+client c4 {
+    txreq -url "/api/test4" -hdr "Host: example.com"
+    rxresp
+    expect resp.status == 200
+} -run
+
+server s1 -wait
