@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 cdylib-plugin = "0.1"
-varnish = { version = "0.5.5", features = ["ffi"] }
+varnish = { git = "https://github.com/varnish-rs/varnish-rs", rev = "01efa1c26fb73f659d96dac238341e58b96751e5", features = ["ffi"] }
 tokio = { version = "1", features = ["full"] }
 aws-config = { version = "1.8", features = ["behavior-version-latest"] }
 aws-sdk-lambda = "1.112"

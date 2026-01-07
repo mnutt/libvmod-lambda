@@ -95,7 +95,7 @@ pub mod lambda_private {
     #[repr(C)]
     pub struct LambdaProbeStats {
         /// Health probe bitmap (last 64 results)
-        #[gauge(format = "bitmap")]
+        #[bitmap]
         pub happy: AtomicU64,
     }
 
